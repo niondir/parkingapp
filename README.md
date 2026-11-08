@@ -37,6 +37,10 @@ Die SQLite-Datenbank liegt im Volume `data`. Konfiguration siehe `.env.example`.
 - `ALLOWED_USER_IDS`: Nutzer mit festem Zugang, unabhängig von der Freischaltung.
 - Sind beide leer, kann jeder den Bot nutzen.
 
+## Ausfallmeldung
+
+Der Bot schreibt alle 30 s einen Zeitstempel in die DB. War er beim Start länger als `OFFLINE_NOTICE_AFTER` (Standard 5 min) weg, bekommen alle Nutzer eine Nachricht mit Beginn und Dauer des Ausfalls, und die in der Zeit bei Telegram aufgelaufenen Befehle werden verworfen. Nach kürzeren Neustarts (z. B. Deploy) werden sie normal abgearbeitet. Parkvorgänge aus der Ausfallzeit meldet der erste Abfragezyklus nach dem Start nach.
+
 Die eigene Telegram-ID steht im Log (`access denied`), sobald man dem Bot schreibt.
 
 Entwicklung: `go test ./...`, Live-Test gegen die echte API: `FAIRPARKEN_LIVE=1 go test ./internal/fairparken -run Live`.

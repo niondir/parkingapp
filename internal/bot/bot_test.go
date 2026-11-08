@@ -23,12 +23,20 @@ type sent struct {
 }
 
 type fakeTG struct {
-	mu   sync.Mutex
-	msgs []sent
+	mu      sync.Mutex
+	msgs    []sent
+	pending []telegram.Update
+	offsets []int64
 }
 
 func (f *fakeTG) GetMe(context.Context) (telegram.User, error) { return telegram.User{}, nil }
-func (f *fakeTG) GetUpdates(context.Context, int64, int) ([]telegram.Update, error) {
+func (f *fakeTG) GetUpdates(_ context.Context, offset int64, _ int) ([]telegram.Update, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offsets = append(f.offsets, offset)
+	if offset == -1 && len(f.pending) > 0 {
+		return f.pending[len(f.pending)-1:], nil
+	}
 	return nil, nil
 }
 func (f *fakeTG) AnswerCallback(context.Context, string, string) error            { return nil }

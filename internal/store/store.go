@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -70,6 +71,10 @@ CREATE TABLE IF NOT EXISTS users (
 	name       TEXT    NOT NULL DEFAULT '',
 	status     TEXT    NOT NULL,
 	created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS plate_info (
 	plate    TEXT PRIMARY KEY,
@@ -308,4 +313,45 @@ func (s *Store) Users(ctx context.Context) ([]User, error) {
 func (s *Store) RemovePlates(ctx context.Context, chatID int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM plates WHERE chat_id = ?`, chatID)
 	return err
+}
+
+// Heartbeat records that the bot is running.
+func (s *Store) Heartbeat(ctx context.Context, t time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO meta (key, value) VALUES ('last_alive', ?)
+		 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, strconv.FormatInt(t.Unix(), 10))
+	return err
+}
+
+// LastAlive returns the time of the last heartbeat or ErrNotFound.
+func (s *Store) LastAlive(ctx context.Context) (time.Time, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'last_alive'`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	sec, err := strconv.ParseInt(v, 10, 64)
+	return time.Unix(sec, 0), err
+}
+
+// Chats returns every chat that watches a plate or belongs to an approved user.
+func (s *Store) Chats(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT chat_id FROM plates UNION SELECT user_id FROM users WHERE status = ?`, UserAllowed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		res = append(res, id)
+	}
+	return res, rows.Err()
 }

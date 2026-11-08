@@ -18,11 +18,13 @@ import (
 
 type Config struct {
 	PollInterval time.Duration
-	RequestGap   time.Duration  // pause between two API requests while polling
-	RemindBefore time.Duration  // reminder before the online payment window closes, 0 = off
-	MaxPlates    int            // per chat
-	AllowedUsers map[int64]bool // always allowed, in addition to users approved by an admin
-	Admins       map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
+	RequestGap   time.Duration // pause between two API requests while polling
+	RemindBefore time.Duration // reminder before the online payment window closes, 0 = off
+	MaxPlates    int           // per chat
+	// After a downtime longer than this, users are informed and pending commands are dropped. 0 = off.
+	OfflineNotice time.Duration
+	AllowedUsers  map[int64]bool // always allowed, in addition to users approved by an admin
+	Admins        map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
 }
 
 // messenger is the part of the Telegram API the bot uses.
@@ -72,12 +74,13 @@ func (b *Bot) Run(ctx context.Context) error {
 		}
 	}
 
+	offset := b.recoverDowntime(ctx)
+	go b.runHeartbeat(ctx)
 	go b.runMonitor(ctx)
 
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	defer wg.Wait()
-	var offset int64
 	for ctx.Err() == nil {
 		updates, err := b.tg.GetUpdates(ctx, offset, 50)
 		if err != nil {

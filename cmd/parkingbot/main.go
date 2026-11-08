@@ -34,10 +34,11 @@ func run() error {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is not set")
 	}
 	cfg := bot.Config{
-		PollInterval: envDuration("POLL_INTERVAL", 3*time.Minute),
-		RequestGap:   envDuration("REQUEST_GAP", time.Second),
-		RemindBefore: envDuration("REMIND_BEFORE", 12*time.Hour),
-		MaxPlates:    envInt("MAX_PLATES", 10),
+		PollInterval:  envDuration("POLL_INTERVAL", 3*time.Minute),
+		RequestGap:    envDuration("REQUEST_GAP", time.Second),
+		RemindBefore:  envDuration("REMIND_BEFORE", 12*time.Hour),
+		MaxPlates:     envInt("MAX_PLATES", 10),
+		OfflineNotice: envDuration("OFFLINE_NOTICE_AFTER", 5*time.Minute),
 	}
 	if cfg.PollInterval < 30*time.Second {
 		return fmt.Errorf("POLL_INTERVAL must be at least 30s")
