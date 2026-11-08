@@ -149,6 +149,11 @@ func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {
 	return c.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
 }
 
-func (c *Client) SetCommands(ctx context.Context, cmds []BotCommand) error {
-	return c.call(ctx, "setMyCommands", map[string]any{"commands": cmds}, nil)
+// SetCommands sets the command menu, for all private chats if chatID is 0.
+func (c *Client) SetCommands(ctx context.Context, cmds []BotCommand, chatID int64) error {
+	p := map[string]any{"commands": cmds}
+	if chatID != 0 {
+		p["scope"] = map[string]any{"type": "chat", "chat_id": chatID}
+	}
+	return c.call(ctx, "setMyCommands", p, nil)
 }

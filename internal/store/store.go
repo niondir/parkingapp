@@ -20,6 +20,21 @@ type Plate struct {
 	Label  string
 }
 
+// User states for access control.
+const (
+	UserPending = "pending"
+	UserAllowed = "allowed"
+	UserBlocked = "blocked"
+)
+
+type User struct {
+	ID        int64
+	Username  string
+	Name      string
+	Status    string
+	CreatedAt time.Time
+}
+
 // Session is a parking session seen by the monitor.
 type Session struct {
 	Plate        string
@@ -48,6 +63,13 @@ CREATE TABLE IF NOT EXISTS sessions (
 	closed        INTEGER NOT NULL DEFAULT 0,
 	reminder_sent INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (plate, key)
+);
+CREATE TABLE IF NOT EXISTS users (
+	user_id    INTEGER PRIMARY KEY,
+	username   TEXT    NOT NULL DEFAULT '',
+	name       TEXT    NOT NULL DEFAULT '',
+	status     TEXT    NOT NULL,
+	created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS plate_info (
 	plate    TEXT PRIMARY KEY,
@@ -217,4 +239,73 @@ func (s *Store) PlateInfo(ctx context.Context, plate string) (quotaID int64, add
 		err = ErrNotFound
 	}
 	return
+}
+
+// UserStatus returns the access state of a Telegram user or ErrNotFound.
+func (s *Store) UserStatus(ctx context.Context, userID int64) (string, error) {
+	var st string
+	err := s.db.QueryRowContext(ctx, `SELECT status FROM users WHERE user_id = ?`, userID).Scan(&st)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return st, err
+}
+
+// RequestAccess records a pending access request. created is false if the user is already known.
+func (s *Store) RequestAccess(ctx context.Context, userID int64, username, name string) (created bool, err error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (user_id, username, name, status, created_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT (user_id) DO NOTHING`, userID, username, name, UserPending, time.Now().Unix())
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SetUserStatus sets the access state, creating the user if needed.
+func (s *Store) SetUserStatus(ctx context.Context, userID int64, status string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (user_id, status, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT (user_id) DO UPDATE SET status = excluded.status`, userID, status, time.Now().Unix())
+	return err
+}
+
+func (s *Store) GetUser(ctx context.Context, userID int64) (User, error) {
+	var u User
+	var created int64
+	err := s.db.QueryRowContext(ctx, `SELECT user_id, username, name, status, created_at FROM users WHERE user_id = ?`, userID).
+		Scan(&u.ID, &u.Username, &u.Name, &u.Status, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return u, ErrNotFound
+	}
+	u.CreatedAt = time.Unix(created, 0)
+	return u, err
+}
+
+func (s *Store) Users(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT user_id, username, name, status, created_at FROM users
+		 ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []User
+	for rows.Next() {
+		var u User
+		var created int64
+		if err := rows.Scan(&u.ID, &u.Username, &u.Name, &u.Status, &created); err != nil {
+			return nil, err
+		}
+		u.CreatedAt = time.Unix(created, 0)
+		res = append(res, u)
+	}
+	return res, rows.Err()
+}
+
+// RemovePlates deletes all plates of a chat.
+func (s *Store) RemovePlates(ctx context.Context, chatID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plates WHERE chat_id = ?`, chatID)
+	return err
 }

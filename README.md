@@ -18,6 +18,7 @@ Telegram-Bot für Parkplätze von [fair parken](https://www.fairparken.com/de-DE
 | `/tarife [Kennzeichen \| Parkplatz-ID]` | Tarife; Preise nur bei offenem Parkvorgang |
 | `/bezahlen [Kennzeichen]` | Link zur Bezahlseite |
 | `/remove [Kennzeichen]` | Kennzeichen entfernen |
+| `/users`, `/allow ID`, `/block ID` | nur Admins, siehe [Zugang](#zugang) |
 
 ## Betrieb
 
@@ -28,7 +29,15 @@ docker compose logs -f
 ```
 
 Die SQLite-Datenbank liegt im Volume `data`. Konfiguration siehe `.env.example`.
-`ALLOWED_USER_IDS` beschränkt den Bot auf bestimmte Telegram-Nutzer; Unbekannte bekommen ihre ID angezeigt.
+
+## Zugang
+
+- `ADMIN_USER_IDS`: Admins. Schreibt ein unbekannter Nutzer dem Bot, wird daraus eine Zugangsanfrage, und alle Admins bekommen eine Nachricht mit „Freischalten“/„Ablehnen“.
+- Admin-Befehle: `/users` (Nutzer, Anfragen, Anzahl Kennzeichen, Buttons), `/allow ID`, `/block ID`. Sperren löscht die Kennzeichen des Nutzers, damit keine Pushes mehr kommen.
+- `ALLOWED_USER_IDS`: Nutzer mit festem Zugang, unabhängig von der Freischaltung.
+- Sind beide leer, kann jeder den Bot nutzen.
+
+Die eigene Telegram-ID steht im Log (`access denied`), sobald man dem Bot schreibt.
 
 Entwicklung: `go test ./...`, Live-Test gegen die echte API: `FAIRPARKEN_LIVE=1 go test ./internal/fairparken -run Live`.
 

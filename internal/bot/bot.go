@@ -18,10 +18,11 @@ import (
 
 type Config struct {
 	PollInterval time.Duration
-	RequestGap   time.Duration // pause between two API requests while polling
-	RemindBefore time.Duration // reminder before the online payment window closes, 0 = off
-	MaxPlates    int           // per chat
-	AllowedUsers map[int64]bool
+	RequestGap   time.Duration  // pause between two API requests while polling
+	RemindBefore time.Duration  // reminder before the online payment window closes, 0 = off
+	MaxPlates    int            // per chat
+	AllowedUsers map[int64]bool // always allowed, in addition to users approved by an admin
+	Admins       map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
 }
 
 // messenger is the part of the Telegram API the bot uses.
@@ -30,7 +31,7 @@ type messenger interface {
 	GetUpdates(ctx context.Context, offset int64, timeout int) ([]telegram.Update, error)
 	Send(ctx context.Context, chatID int64, html string, kb *telegram.InlineKeyboard) error
 	AnswerCallback(ctx context.Context, id, text string) error
-	SetCommands(ctx context.Context, cmds []telegram.BotCommand) error
+	SetCommands(ctx context.Context, cmds []telegram.BotCommand, chatID int64) error
 }
 
 type Bot struct {
@@ -62,8 +63,13 @@ func (b *Bot) Run(ctx context.Context) error {
 		return fmt.Errorf("getMe: %w", err)
 	}
 	slog.Info("bot started", "username", me.Username)
-	if err := b.tg.SetCommands(ctx, commands); err != nil {
+	if err := b.tg.SetCommands(ctx, commands, 0); err != nil {
 		slog.Warn("setMyCommands", "err", err)
+	}
+	for id := range b.cfg.Admins {
+		if err := b.tg.SetCommands(ctx, append(commands[:len(commands):len(commands)], adminCommands...), id); err != nil {
+			slog.Warn("setMyCommands for admin", "admin", id, "err", err)
+		}
 	}
 
 	go b.runMonitor(ctx)
@@ -102,27 +108,28 @@ func (b *Bot) Run(ctx context.Context) error {
 	return nil
 }
 
-func (b *Bot) allowed(userID int64) bool {
-	return len(b.cfg.AllowedUsers) == 0 || b.cfg.AllowedUsers[userID]
-}
-
 func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 	switch {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
-		if !b.allowed(m.From.ID) {
-			slog.Info("access denied", "user", m.From.ID, "username", m.From.Username, "name", m.From.FirstName)
-			b.reply(ctx, m.Chat.ID, fmt.Sprintf("⛔ Kein Zugriff. Deine Telegram-ID ist <code>%d</code> – bitte beim Betreiber freischalten lassen.", m.From.ID), nil)
+		text := strings.TrimSpace(m.Text)
+		if !b.checkAccess(ctx, m.Chat.ID, *m.From) {
 			return
 		}
-		b.handleText(ctx, m.Chat.ID, strings.TrimSpace(m.Text))
+		if b.isAdmin(m.From.ID) && b.handleAdminText(ctx, m.Chat.ID, m.From.ID, text) {
+			return
+		}
+		b.handleText(ctx, m.Chat.ID, text)
 	case u.CallbackQuery != nil && u.CallbackQuery.Message != nil:
 		q := u.CallbackQuery
-		if !b.allowed(q.From.ID) {
+		if ok, err := b.allowed(ctx, q.From.ID); err != nil || !ok {
 			_ = b.tg.AnswerCallback(ctx, q.ID, "Kein Zugriff")
 			return
 		}
 		_ = b.tg.AnswerCallback(ctx, q.ID, "")
+		if b.isAdmin(q.From.ID) && b.handleAdminCallback(ctx, q.Message.Chat.ID, q.From.ID, q.Data) {
+			return
+		}
 		b.handleCallback(ctx, q.Message.Chat.ID, q.Data)
 	}
 }
