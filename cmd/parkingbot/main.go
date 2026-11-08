@@ -34,11 +34,12 @@ func run() error {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is not set")
 	}
 	cfg := bot.Config{
-		PollInterval:  envDuration("POLL_INTERVAL", 3*time.Minute),
-		RequestGap:    envDuration("REQUEST_GAP", time.Second),
-		RemindBefore:  envDuration("REMIND_BEFORE", 12*time.Hour),
-		MaxPlates:     envInt("MAX_PLATES", 10),
-		OfflineNotice: envDuration("OFFLINE_NOTICE_AFTER", 5*time.Minute),
+		PollInterval:   envDuration("POLL_INTERVAL", 3*time.Minute),
+		RequestGap:     envDuration("REQUEST_GAP", time.Second),
+		RemindBefore:   envDuration("REMIND_BEFORE", 12*time.Hour),
+		MaxPlates:      envInt("MAX_PLATES", 10),
+		OfflineNotice:  envDuration("OFFLINE_NOTICE_AFTER", 5*time.Minute),
+		HealthcheckURL: strings.TrimRight(os.Getenv("HEALTHCHECK_URL"), "/"),
 	}
 	if cfg.PollInterval < 30*time.Second {
 		return fmt.Errorf("POLL_INTERVAL must be at least 30s")
@@ -63,7 +64,7 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	slog.Info("starting", "poll", cfg.PollInterval, "admins", len(cfg.Admins), "allowed_users", len(cfg.AllowedUsers), "db", dbPath)
+	slog.Info("starting", "poll", cfg.PollInterval, "admins", len(cfg.Admins), "healthcheck", cfg.HealthcheckURL != "", "allowed_users", len(cfg.AllowedUsers), "db", dbPath)
 	return bot.New(cfg, telegram.New(token), fairparken.New(), st).Run(ctx)
 }
 

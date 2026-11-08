@@ -22,9 +22,10 @@ type Config struct {
 	RemindBefore time.Duration // reminder before the online payment window closes, 0 = off
 	MaxPlates    int           // per chat
 	// After a downtime longer than this, users are informed and pending commands are dropped. 0 = off.
-	OfflineNotice time.Duration
-	AllowedUsers  map[int64]bool // always allowed, in addition to users approved by an admin
-	Admins        map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
+	OfflineNotice  time.Duration
+	HealthcheckURL string         // pinged after every poll cycle, e.g. https://hc-ping.com/<uuid>
+	AllowedUsers   map[int64]bool // always allowed, in addition to users approved by an admin
+	Admins         map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
 }
 
 // messenger is the part of the Telegram API the bot uses.
@@ -32,6 +33,8 @@ type messenger interface {
 	GetMe(ctx context.Context) (telegram.User, error)
 	GetUpdates(ctx context.Context, offset int64, timeout int) ([]telegram.Update, error)
 	Send(ctx context.Context, chatID int64, html string, kb *telegram.InlineKeyboard) error
+	Push(ctx context.Context, chatID int64, html string, kb *telegram.InlineKeyboard, silent bool) error
+	Edit(ctx context.Context, chatID, messageID int64, html string, kb *telegram.InlineKeyboard) error
 	AnswerCallback(ctx context.Context, id, text string) error
 	SetCommands(ctx context.Context, cmds []telegram.BotCommand, chatID int64) error
 }
@@ -42,10 +45,13 @@ type Bot struct {
 	fp    *fairparken.Client
 	store *store.Store
 	mu    sync.Mutex // serializes state changes of the monitor
+
+	statsMu sync.Mutex
+	stats   pollStats
 }
 
 func New(cfg Config, tg messenger, fp *fairparken.Client, st *store.Store) *Bot {
-	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st}
+	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}}
 }
 
 var commands = []telegram.BotCommand{
@@ -55,6 +61,10 @@ var commands = []telegram.BotCommand{
 	{Command: "remove", Description: "Kennzeichen entfernen"},
 	{Command: "tarife", Description: "Tarife des Parkplatzes"},
 	{Command: "bezahlen", Description: "Link zur Bezahlseite"},
+	{Command: "verlauf", Description: "Letzte Parkvorgänge und Kosten"},
+	{Command: "einstellungen", Description: "Benachrichtigungen und Alarme"},
+	{Command: "rabatt", Description: "Preis mit Rabattcode: /rabatt CODE"},
+	{Command: "kassenzettel", Description: "Vertragsstrafe mit Kassenzettel anfechten"},
 	{Command: "help", Description: "Hilfe"},
 }
 
@@ -133,7 +143,7 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 		if b.isAdmin(q.From.ID) && b.handleAdminCallback(ctx, q.Message.Chat.ID, q.From.ID, q.Data) {
 			return
 		}
-		b.handleCallback(ctx, q.Message.Chat.ID, q.Data)
+		b.handleCallback(ctx, q.Message.Chat.ID, q.Message.MessageID, q.Data)
 	}
 }
 
@@ -179,14 +189,30 @@ func (b *Bot) handleText(ctx context.Context, chatID int64, text string) {
 		b.cmdTariffs(ctx, chatID, args)
 	case "/bezahlen", "/pay":
 		b.cmdPay(ctx, chatID, args)
+	case "/verlauf", "/history":
+		b.cmdHistory(ctx, chatID, args)
+	case "/einstellungen", "/settings":
+		b.cmdSettings(ctx, chatID, args)
+	case "/alarm":
+		b.cmdLimit(ctx, chatID, args, limitPrice)
+	case "/dauer":
+		b.cmdLimit(ctx, chatID, args, limitDuration)
+	case "/ruhezeit":
+		b.cmdQuiet(ctx, chatID, args)
+	case "/rabatt", "/voucher":
+		b.cmdVoucher(ctx, chatID, args)
+	case "/kassenzettel":
+		b.cmdReceipt(ctx, chatID)
 	default:
 		b.reply(ctx, chatID, "Unbekannter Befehl. /help zeigt alle Befehle.", nil)
 	}
 }
 
-func (b *Bot) handleCallback(ctx context.Context, chatID int64, data string) {
+func (b *Bot) handleCallback(ctx context.Context, chatID, msgID int64, data string) {
 	kind, plate, _ := strings.Cut(data, ":")
 	switch kind {
+	case "s", "sp", "sr", "sc":
+		b.settingsCallback(ctx, chatID, msgID, kind, plate)
 	case "c":
 		b.cmdCheck(ctx, chatID, plate)
 	case "t":
@@ -223,7 +249,16 @@ Ich prüfe regelmäßig, ob für deine Kennzeichen ein offener Parkvorgang auf e
 /check – jetzt prüfen (alle oder <code>/check HHAB123</code>)
 /tarife – Tarife und Preise des Parkplatzes
 /bezahlen – Link zur offiziellen Bezahlseite
+/verlauf – letzte Parkvorgänge und Kosten pro Monat
+/rabatt <code>CODE</code> – Preis mit Rabattcode prüfen
+/kassenzettel – Vertragsstrafe mit Kassenzettel anfechten
 /remove <code>HHAB123</code> – Kennzeichen entfernen
+
+<b>Benachrichtigungen</b>
+/einstellungen – pausieren, Frist-Erinnerung, Preiserhöhungen
+/alarm <code>HHAB123 10</code> – Meldung ab 10 € Gebühr
+/dauer <code>HHAB123 3</code> – Meldung nach 3 h Parkdauer
+/ruhezeit <code>22-7</code> – nachts Meldungen ohne Ton
 
 Ein Kennzeichen ohne Befehl zu schicken prüft es direkt.
 Bezahlt wird auf der offiziellen Seite pay.fairparken.com – der Bot sieht keine Zahlungsdaten.`, nil)
@@ -397,7 +432,7 @@ func (b *Bot) cmdCheck(ctx context.Context, chatID int64, args string) {
 			if !watched {
 				kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}})
 			}
-			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtItem(r.AnprResult, p.Label), kb)
+			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label), kb)
 		}
 	}
 }

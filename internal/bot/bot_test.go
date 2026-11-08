@@ -17,9 +17,11 @@ import (
 )
 
 type sent struct {
-	chat int64
-	text string
-	kb   *telegram.InlineKeyboard
+	chat   int64
+	text   string
+	kb     *telegram.InlineKeyboard
+	silent bool
+	edit   int64 // message ID for edits
 }
 
 type fakeTG struct {
@@ -41,10 +43,19 @@ func (f *fakeTG) GetUpdates(_ context.Context, offset int64, _ int) ([]telegram.
 }
 func (f *fakeTG) AnswerCallback(context.Context, string, string) error            { return nil }
 func (f *fakeTG) SetCommands(context.Context, []telegram.BotCommand, int64) error { return nil }
-func (f *fakeTG) Send(_ context.Context, chat int64, text string, kb *telegram.InlineKeyboard) error {
+func (f *fakeTG) Send(ctx context.Context, chat int64, text string, kb *telegram.InlineKeyboard) error {
+	return f.Push(ctx, chat, text, kb, false)
+}
+func (f *fakeTG) Push(_ context.Context, chat int64, text string, kb *telegram.InlineKeyboard, silent bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.msgs = append(f.msgs, sent{chat, text, kb})
+	f.msgs = append(f.msgs, sent{chat: chat, text: text, kb: kb, silent: silent})
+	return nil
+}
+func (f *fakeTG) Edit(_ context.Context, chat, msgID int64, text string, kb *telegram.InlineKeyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.msgs = append(f.msgs, sent{chat: chat, text: text, kb: kb, edit: msgID})
 	return nil
 }
 
@@ -60,6 +71,7 @@ func (f *fakeTG) take() []sent {
 type fakeAPI struct {
 	mu       sync.Mutex
 	sessions map[string][]map[string]any
+	articles []any
 	quotes   []int64
 }
 
@@ -72,7 +84,11 @@ func (a *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&req)
 		var res []map[string]any
 		for _, s := range a.sessions[req.Plate] {
-			res = append(res, map[string]any{"anprResult": s, "articles": []any{}})
+			arts := a.articles
+			if arts == nil {
+				arts = []any{}
+			}
+			res = append(res, map[string]any{"anprResult": s, "articles": arts})
 		}
 		if res == nil {
 			res = []map[string]any{}
@@ -83,6 +99,16 @@ func (a *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/Payment/ApplyVoucherCode":
 		var item map[string]any
 		json.NewDecoder(r.Body).Decode(&item)
+		if vc, _ := item["voucherCode"].(string); vc != "" {
+			if vc != "RABATT" {
+				http.Error(w, `{"error":"invalid"}`, http.StatusBadRequest)
+				return
+			}
+			item["price"] = 1.0
+			item["voucherValue"] = 3.5
+			json.NewEncoder(w).Encode(map[string]any{"parkingItem": item})
+			return
+		}
 		id := int64(item["tariffId"].(float64))
 		a.quotes = append(a.quotes, id)
 		item["price"] = float64(id) * 2.5

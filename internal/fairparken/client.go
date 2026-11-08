@@ -78,8 +78,34 @@ func parseTime(s string) (time.Time, bool) {
 
 // SearchResult is one element of the AnprResultSearch response.
 type SearchResult struct {
-	AnprResult ParkingItem       `json:"anprResult"`
-	Articles   []json.RawMessage `json:"articles"`
+	AnprResult ParkingItem `json:"anprResult"`
+	Articles   []Article   `json:"articles"`
+}
+
+// Article is an extra product of a parking area, e.g. a day ticket for visitors.
+type Article struct {
+	Name  string `json:"name"`
+	Price struct {
+		Amount   float64 `json:"amount"` // in cent
+		Currency string  `json:"currency"`
+	} `json:"price"`
+	Product struct {
+		ProductType string `json:"productType"`
+	} `json:"product"`
+}
+
+var articleNames = map[string]string{
+	"Tageskarte_Erwachsener":              "Tageskarte Erwachsene",
+	"Tageskarte_Ermaessigt":               "Tageskarte ermäßigt",
+	"Tageskarte_Jugendlich_Alleinreisend": "Tageskarte Kinder/Jugendliche allein",
+}
+
+// DisplayName is the German label the web client uses for the article.
+func (a Article) DisplayName() string {
+	if n, ok := articleNames[a.Name]; ok {
+		return n
+	}
+	return strings.ReplaceAll(a.Name, "_", " ")
 }
 
 // Tariff is a vehicle category of a parking area. Icon is null for cars.
@@ -115,6 +141,10 @@ func NormalizePlate(s string) string {
 	return b.String()
 }
 
+// ReceiptURL is the official page to contest a contractual penalty with a receipt.
+// It needs a reCAPTCHA, so the bot only links to it.
+const ReceiptURL = "https://kassenzettel.fairparken.com"
+
 // PayURL opens the official payment page with the plate prefilled.
 func PayURL(plate string) string {
 	return DefaultBaseURL + "plate/" + url.PathEscape(plate)
@@ -138,13 +168,25 @@ func (c *Client) Tariffs(ctx context.Context, quotaID int64) ([]Tariff, error) {
 // Quote recalculates the price of a parking session for another tariff.
 // The web client calls the same endpoint when the user picks a tariff.
 func (c *Client) Quote(ctx context.Context, item ParkingItem, tariffID int64) (ParkingItem, error) {
+	return c.applyVoucher(ctx, item, map[string]any{"tariffId": tariffID})
+}
+
+// QuoteVoucher calculates the price of a parking session with a voucher code.
+// The web client calls the same endpoint when the user enters a code.
+func (c *Client) QuoteVoucher(ctx context.Context, item ParkingItem, code string) (ParkingItem, error) {
+	return c.applyVoucher(ctx, item, map[string]any{"voucherCode": code})
+}
+
+func (c *Client) applyVoucher(ctx context.Context, item ParkingItem, set map[string]any) (ParkingItem, error) {
 	body := map[string]any{}
 	if len(item.Raw) > 0 {
 		if err := json.Unmarshal(item.Raw, &body); err != nil {
 			return ParkingItem{}, err
 		}
 	}
-	body["tariffId"] = tariffID
+	for k, v := range set {
+		body[k] = v
+	}
 	var res struct {
 		ParkingItem ParkingItem `json:"parkingItem"`
 	}

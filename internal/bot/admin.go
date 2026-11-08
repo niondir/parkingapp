@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/niondir/parkingapp/internal/store"
 	"github.com/niondir/parkingapp/internal/telegram"
@@ -16,6 +17,8 @@ var adminCommands = []telegram.BotCommand{
 	{Command: "users", Description: "Admin: Nutzer und Anfragen"},
 	{Command: "allow", Description: "Admin: Nutzer freischalten (/allow ID)"},
 	{Command: "block", Description: "Admin: Nutzer sperren (/block ID)"},
+	{Command: "stats", Description: "Admin: Statistik und Abfragefehler"},
+	{Command: "rundnachricht", Description: "Admin: Nachricht an alle Nutzer"},
 }
 
 func (b *Bot) isAdmin(userID int64) bool { return b.cfg.Admins[userID] }
@@ -110,6 +113,10 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 	switch cmd {
 	case "/users":
 		b.cmdUsers(ctx, chatID)
+	case "/stats":
+		b.cmdStats(ctx, chatID)
+	case "/rundnachricht", "/broadcast":
+		b.cmdBroadcast(ctx, chatID, adminID, args)
 	case "/allow", "/block":
 		id, err := strconv.ParseInt(args, 10, 64)
 		if err != nil {
@@ -223,4 +230,81 @@ func (b *Bot) cmdUsers(ctx context.Context, chatID int64) {
 		}
 	}
 	b.reply(ctx, chatID, sb.String(), kb)
+}
+
+func (b *Bot) cmdStats(ctx context.Context, chatID int64) {
+	st, err := b.store.Stats(ctx)
+	if err != nil {
+		b.fail(ctx, chatID, "Laden", err)
+		return
+	}
+	b.statsMu.Lock()
+	ps := b.stats
+	b.statsMu.Unlock()
+	var sb strings.Builder
+	sb.WriteString("📊 <b>Statistik</b>\n\n")
+	fmt.Fprintf(&sb, "Nutzer: %d freigeschaltet, %d angefragt, %d gesperrt, %d Admins\n",
+		st.Users[store.UserAllowed], st.Users[store.UserPending], st.Users[store.UserBlocked], len(b.cfg.Admins))
+	fmt.Fprintf(&sb, "Chats mit Kennzeichen: %d, Kennzeichen: %d\n", st.Chats, st.Plates)
+	fmt.Fprintf(&sb, "Offene Parkvorgänge: %d, Parkvorgänge 30 Tage: %d\n\n", st.OpenSessions, st.Sessions30d)
+	fmt.Fprintf(&sb, "Läuft seit: %s (%s)\n", fmtTime(ps.Started), fmtGap(time.Since(ps.Started)))
+	if ps.LastPoll.IsZero() {
+		sb.WriteString("Letzte Abfragerunde: noch keine\n")
+	} else {
+		fmt.Fprintf(&sb, "Letzte Abfragerunde: %s, Dauer %s\n", fmtTime(ps.LastPoll), ps.LastDuration.Round(time.Millisecond))
+	}
+	fmt.Fprintf(&sb, "Abfragen seit Start: %d, Fehler: %d\n", ps.Searches, ps.Errors)
+	if ps.LastError != "" {
+		fmt.Fprintf(&sb, "Letzter Fehler: <code>%s</code>\n", esc(truncate(ps.LastError, 300)))
+	}
+	fmt.Fprintf(&sb, "Abfrageintervall: %s, Healthcheck: %s", b.cfg.PollInterval, onOff(b.cfg.HealthcheckURL != ""))
+	b.reply(ctx, chatID, sb.String(), nil)
+}
+
+func truncate(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
+
+// allChats returns every chat that should get general announcements.
+func (b *Bot) allChats(ctx context.Context) []int64 {
+	chats, err := b.store.Chats(ctx)
+	if err != nil {
+		slog.Error("list chats", "err", err)
+	}
+	seen := map[int64]bool{}
+	var res []int64
+	for _, ids := range [][]int64{chats, keys(b.cfg.Admins), keys(b.cfg.AllowedUsers)} {
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				res = append(res, id)
+			}
+		}
+	}
+	return res
+}
+
+func (b *Bot) cmdBroadcast(ctx context.Context, chatID, adminID int64, text string) {
+	if text == "" {
+		b.reply(ctx, chatID, "Bitte so: <code>/rundnachricht Wartung heute ab 20 Uhr</code>", nil)
+		return
+	}
+	var sent, failed int
+	for _, id := range b.allChats(ctx) {
+		if err := b.tg.Send(ctx, id, "📢 "+esc(text), nil); err != nil {
+			slog.Warn("broadcast", "chat", id, "err", err)
+			failed++
+			continue
+		}
+		sent++
+	}
+	slog.Info("broadcast", "admin", adminID, "sent", sent, "failed", failed)
+	msg := fmt.Sprintf("📢 An %d Chats gesendet.", sent)
+	if failed > 0 {
+		msg += fmt.Sprintf(" %d fehlgeschlagen (z. B. Bot blockiert).", failed)
+	}
+	b.reply(ctx, chatID, msg, nil)
 }
