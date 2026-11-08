@@ -35,6 +35,7 @@ type messenger interface {
 	Send(ctx context.Context, chatID int64, html string, kb *telegram.InlineKeyboard) error
 	Push(ctx context.Context, chatID int64, html string, kb *telegram.InlineKeyboard, silent bool) error
 	Edit(ctx context.Context, chatID, messageID int64, html string, kb *telegram.InlineKeyboard) error
+	SendMsg(ctx context.Context, chatID int64, html string, markup any) (int64, error)
 	AnswerCallback(ctx context.Context, id, text string) error
 	SetCommands(ctx context.Context, cmds []telegram.BotCommand, chatID int64) error
 }
@@ -48,13 +49,17 @@ type Bot struct {
 
 	statsMu sync.Mutex
 	stats   pollStats
+
+	pendMu sync.Mutex
+	pend   map[int64]*pending // open questions per chat
 }
 
 func New(cfg Config, tg messenger, fp *fairparken.Client, st *store.Store) *Bot {
-	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}}
+	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}}
 }
 
 var commands = []telegram.BotCommand{
+	{Command: "menu", Description: "Hauptmenü"},
 	{Command: "check", Description: "Parkvorgänge jetzt prüfen"},
 	{Command: "list", Description: "Meine Kennzeichen"},
 	{Command: "add", Description: "Kennzeichen hinzufügen: /add HH-AB123 [Name]"},
@@ -162,20 +167,36 @@ func (b *Bot) handleText(ctx context.Context, chatID int64, text string) {
 	if text == "" {
 		return
 	}
+	if text == menuButton {
+		b.endPending(ctx, chatID, "✖️ Abgebrochen.")
+		b.showMain(ctx, chatID, 0)
+		return
+	}
 	if !strings.HasPrefix(text, "/") {
-		// A bare plate is a shortcut for /check <plate>.
-		if p := fairparken.NormalizePlate(text); validPlate(p) && !strings.Contains(text, "\n") {
+		if p := b.getPending(chatID); p != nil {
+			b.handleInput(ctx, chatID, p, text)
+			return
+		}
+		// A bare plate is a shortcut for /check <plate>. Plates contain digits,
+		// so words like "Hallo" open the menu instead.
+		if p := fairparken.NormalizePlate(text); validPlate(p) && strings.ContainsAny(p, "0123456789") && !strings.Contains(text, "\n") {
 			b.cmdCheck(ctx, chatID, p)
 			return
 		}
-		b.cmdHelp(ctx, chatID)
+		b.showMain(ctx, chatID, 0)
 		return
 	}
+	// A command cancels an open question.
+	b.endPending(ctx, chatID, "✖️ Abgebrochen.")
 	cmd, args, _ := strings.Cut(text, " ")
 	cmd, _, _ = strings.Cut(strings.ToLower(cmd), "@") // /check@MyBot
 	args = strings.TrimSpace(args)
 	switch cmd {
-	case "/start", "/help", "/hilfe":
+	case "/start":
+		b.sendWelcome(ctx, chatID)
+	case "/menu", "/menue":
+		b.showMain(ctx, chatID, 0)
+	case "/help", "/hilfe":
 		b.cmdHelp(ctx, chatID)
 	case "/add":
 		b.cmdAdd(ctx, chatID, args)
@@ -210,8 +231,11 @@ func (b *Bot) handleText(ctx context.Context, chatID int64, text string) {
 
 func (b *Bot) handleCallback(ctx context.Context, chatID, msgID int64, data string) {
 	kind, plate, _ := strings.Cut(data, ":")
+	if b.handleMenuCallback(ctx, chatID, msgID, kind, plate) {
+		return
+	}
 	switch kind {
-	case "s", "sp", "sr", "sc":
+	case "sp", "sr", "sc":
 		b.settingsCallback(ctx, chatID, msgID, kind, plate)
 	case "c":
 		b.cmdCheck(ctx, chatID, plate)
@@ -219,8 +243,6 @@ func (b *Bot) handleCallback(ctx context.Context, chatID, msgID int64, data stri
 		b.cmdTariffs(ctx, chatID, plate)
 	case "a":
 		b.cmdAdd(ctx, chatID, plate)
-	case "r":
-		b.cmdRemove(ctx, chatID, plate)
 	}
 }
 
@@ -241,27 +263,14 @@ func validPlate(p string) bool {
 func (b *Bot) cmdHelp(ctx context.Context, chatID int64) {
 	b.reply(ctx, chatID, `🅿️ <b>fair parken Bot</b>
 
-Ich prüfe regelmäßig, ob für deine Kennzeichen ein offener Parkvorgang auf einem fair-parken-Parkplatz (FreeFlow, Kennzeichenerkennung) existiert, und schicke dir eine Nachricht mit Bezahl-Link.
+Ich prüfe alle paar Minuten, ob für deine Kennzeichen ein offener Parkvorgang auf einem fair-parken-Parkplatz (Kennzeichenerkennung, ohne Ticket) existiert, und schicke dir eine Nachricht mit Bezahl-Button.
 
-<b>Befehle</b>
-/add <code>HH-AB123 Name</code> – Kennzeichen hinzufügen (Name optional)
-/list – deine Kennzeichen
-/check – jetzt prüfen (alle oder <code>/check HHAB123</code>)
-/tarife – Tarife und Preise des Parkplatzes
-/bezahlen – Link zur offiziellen Bezahlseite
-/verlauf – letzte Parkvorgänge und Kosten pro Monat
-/rabatt <code>CODE</code> – Preis mit Rabattcode prüfen
-/kassenzettel – Vertragsstrafe mit Kassenzettel anfechten
-/remove <code>HHAB123</code> – Kennzeichen entfernen
+<b>Bedienung:</b> Alles geht über „`+menuButton+`“ unten im Chat. Unter <i>Meine Kennzeichen</i> → Kennzeichen antippen findest du Prüfen, Bezahlen, Tarife, Rabattcode, Verlauf und die Einstellungen (Pause, Preis- und Dauer-Alarm, Ruhezeit).
 
-<b>Benachrichtigungen</b>
-/einstellungen – pausieren, Frist-Erinnerung, Preiserhöhungen
-/alarm <code>HHAB123 10</code> – Meldung ab 10 € Gebühr
-/dauer <code>HHAB123 3</code> – Meldung nach 3 h Parkdauer
-/ruhezeit <code>22-7</code> – nachts Meldungen ohne Ton
+Ein Kennzeichen einfach als Nachricht schicken prüft es sofort.
+Bezahlt wird auf der offiziellen Seite pay.fairparken.com – der Bot sieht keine Zahlungsdaten.
 
-Ein Kennzeichen ohne Befehl zu schicken prüft es direkt.
-Bezahlt wird auf der offiziellen Seite pay.fairparken.com – der Bot sieht keine Zahlungsdaten.`, nil)
+<i>Für Tipp-Fans gibt es auch Befehle: /add, /check, /tarife, /verlauf, /alarm, /dauer, /ruhezeit, /rabatt, /kassenzettel.</i>`, kb(row(btn("🏠 Hauptmenü", "m"))))
 }
 
 func (b *Bot) cmdAdd(ctx context.Context, chatID int64, args string) {
@@ -347,27 +356,7 @@ func (b *Bot) cmdRemove(ctx context.Context, chatID int64, args string) {
 }
 
 func (b *Bot) cmdList(ctx context.Context, chatID int64) {
-	plates, err := b.store.Plates(ctx, chatID)
-	if err != nil {
-		b.fail(ctx, chatID, "Laden", err)
-		return
-	}
-	if len(plates) == 0 {
-		b.reply(ctx, chatID, "Noch keine Kennzeichen. Hinzufügen mit <code>/add HH-AB123 Name</code>", nil)
-		return
-	}
-	var sb strings.Builder
-	sb.WriteString("🚗 <b>Deine Kennzeichen</b>\n")
-	kb := &telegram.InlineKeyboard{}
-	for _, p := range plates {
-		sb.WriteString("\n• " + plateTitle(p.Plate, p.Label))
-		kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{
-			{Text: "🔄 " + p.Plate, CallbackData: "c:" + p.Plate},
-			{Text: "🏷 Tarife", CallbackData: "t:" + p.Plate},
-			{Text: "🗑", CallbackData: "r:" + p.Plate},
-		})
-	}
-	b.reply(ctx, chatID, sb.String(), kb)
+	b.showPlates(ctx, chatID, 0)
 }
 
 // targetPlates resolves the argument of /check and friends: one plate or all of the chat.

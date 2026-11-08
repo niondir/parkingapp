@@ -70,8 +70,9 @@ func TestAdminApproval(t *testing.T) {
 
 	b.handle(ctx, click(admin, "ua:200"))
 	m = tg.take()
-	if u := byChat(m, user); len(u) != 1 || !strings.Contains(u[0].text, "freigeschaltet") {
-		t.Fatalf("user not informed: %+v", m)
+	if u := byChat(m, user); len(u) != 3 || !strings.Contains(u[0].text, "freigeschaltet") || u[1].markup != replyKeyboard ||
+		!strings.Contains(u[2].text, "Hauptmenü") {
+		t.Fatalf("user must get welcome and menu: %+v", m)
 	}
 	b.handle(ctx, msg(user, "/add HHKF860E"))
 	if m := tg.take(); !strings.Contains(m[0].text, "hinzugefügt") {

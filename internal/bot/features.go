@@ -52,9 +52,7 @@ func settingsText(p store.Plate, cs store.ChatSettings) string {
 	} else {
 		sb.WriteString("Parkdauer-Alarm: aus\n")
 	}
-	fmt.Fprintf(&sb, "Ruhezeit (alle Kennzeichen): %s\n", fmtQuiet(cs))
-	fmt.Fprintf(&sb, "\nÄndern:\n<code>/alarm %s 10</code> – Preisalarm in €\n<code>/dauer %s 3</code> – Dauer-Alarm in Stunden\n<code>/ruhezeit 22-7</code>\n(jeweils <code>aus</code> zum Abschalten)",
-		esc(p.Plate), esc(p.Plate))
+	fmt.Fprintf(&sb, "Ruhezeit (alle Kennzeichen): %s", fmtQuiet(cs))
 	return sb.String()
 }
 
@@ -67,6 +65,8 @@ func settingsKeyboard(p store.Plate) *telegram.InlineKeyboard {
 		{{Text: pause, CallbackData: "sp:" + p.Plate}},
 		{{Text: "🔔 Frist-Erinnerung " + onOff(!p.Remind) + "schalten", CallbackData: "sr:" + p.Plate}},
 		{{Text: "📈 Preiserhöhungen " + onOff(!p.PriceChange) + "schalten", CallbackData: "sc:" + p.Plate}},
+		{{Text: "💸 Preisalarm", CallbackData: "pl:" + p.Plate}, {Text: "⏱ Dauer-Alarm", CallbackData: "dl:" + p.Plate}},
+		{{Text: "🌙 Ruhezeit", CallbackData: "q:" + p.Plate}, {Text: "⬅️ Zurück", CallbackData: "p:" + p.Plate}},
 	}}
 }
 
@@ -119,10 +119,6 @@ func (b *Bot) cmdSettings(ctx context.Context, chatID int64, args string) {
 }
 
 func (b *Bot) settingsCallback(ctx context.Context, chatID, msgID int64, kind, plate string) {
-	if kind == "s" {
-		b.cmdSettings(ctx, chatID, plate)
-		return
-	}
 	p, err := b.store.GetPlate(ctx, chatID, plate)
 	if err != nil {
 		b.reply(ctx, chatID, "<b>"+esc(plate)+"</b> ist nicht gespeichert.", nil)
@@ -175,32 +171,21 @@ func (b *Bot) cmdLimit(ctx context.Context, chatID int64, args string, kind limi
 	if !ok {
 		return
 	}
-	off := value == "aus" || value == "off" || value == "0"
 	switch kind {
 	case limitPrice:
-		v, err := strconv.ParseFloat(strings.Replace(strings.TrimSuffix(value, "€"), ",", ".", 1), 64)
-		if !off && (err != nil || v <= 0 || v > 10000) {
+		v, ok := parsePrice(value)
+		if !ok {
 			b.reply(ctx, chatID, usage, nil)
 			return
 		}
-		if off {
-			v = 0
-		}
 		p.PriceLimit = v
 	case limitDuration:
-		var d time.Duration
-		if !off {
-			if h, err := strconv.ParseFloat(strings.Replace(strings.TrimSuffix(value, "h"), ",", ".", 1), 64); err == nil {
-				d = time.Duration(h * float64(time.Hour))
-			} else if pd, err := time.ParseDuration(value); err == nil {
-				d = pd
-			}
-			if d < time.Minute || d > 30*24*time.Hour {
-				b.reply(ctx, chatID, usage, nil)
-				return
-			}
+		d, ok := parseDurationValue(value)
+		if !ok {
+			b.reply(ctx, chatID, usage, nil)
+			return
 		}
-		p.DurationLimit = d.Round(time.Minute)
+		p.DurationLimit = d
 	}
 	if err := b.store.SetPlateSettings(ctx, chatID, p.Plate, p.PlateSettings); err != nil {
 		b.fail(ctx, chatID, "Speichern", err)
@@ -225,20 +210,69 @@ func (b *Bot) cmdQuiet(ctx context.Context, chatID int64, args string) {
 	case args == "aus" || args == "off":
 		cs = store.ChatSettings{}
 	default:
-		from, to, ok := strings.Cut(strings.ReplaceAll(args, " ", ""), "-")
-		f, err1 := strconv.Atoi(strings.TrimSuffix(from, "uhr"))
-		t, err2 := strconv.Atoi(strings.TrimSuffix(to, "uhr"))
-		if !ok || err1 != nil || err2 != nil || f < 0 || f > 23 || t < 0 || t > 23 || f == t {
+		var ok bool
+		if cs, ok = parseQuiet(args); !ok {
 			b.reply(ctx, chatID, usage, nil)
 			return
 		}
-		cs = store.ChatSettings{QuietFrom: f, QuietTo: t}
 	}
 	if err := b.store.SetChatSettings(ctx, chatID, cs); err != nil {
 		b.fail(ctx, chatID, "Speichern", err)
 		return
 	}
 	b.reply(ctx, chatID, "🌙 Ruhezeit: "+fmtQuiet(cs), nil)
+}
+
+func isOff(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "aus" || v == "off" || v == "0"
+}
+
+// parsePrice parses "10", "7,50" or "12 €". "aus" returns 0.
+func parsePrice(v string) (float64, bool) {
+	if isOff(v) {
+		return 0, true
+	}
+	v = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "€"))
+	f, err := strconv.ParseFloat(strings.Replace(v, ",", ".", 1), 64)
+	if err != nil || f <= 0 || f > 10000 {
+		return 0, false
+	}
+	return f, true
+}
+
+// parseDurationValue parses hours ("3", "1,5", "2h") or Go durations ("90m"). "aus" returns 0.
+func parseDurationValue(v string) (time.Duration, bool) {
+	if isOff(v) {
+		return 0, true
+	}
+	v = strings.ToLower(strings.ReplaceAll(v, " ", ""))
+	var d time.Duration
+	if h, err := strconv.ParseFloat(strings.Replace(strings.TrimSuffix(v, "h"), ",", ".", 1), 64); err == nil {
+		d = time.Duration(h * float64(time.Hour))
+	} else if pd, err := time.ParseDuration(v); err == nil {
+		d = pd
+	}
+	if d < time.Minute || d > 30*24*time.Hour {
+		return 0, false
+	}
+	return d.Round(time.Minute), true
+}
+
+// parseQuiet parses "22-7" (hours). "aus" turns quiet hours off.
+func parseQuiet(v string) (store.ChatSettings, bool) {
+	if isOff(v) {
+		return store.ChatSettings{}, true
+	}
+	v = strings.ToLower(strings.ReplaceAll(v, " ", ""))
+	v = strings.ReplaceAll(v, "–", "-")
+	from, to, ok := strings.Cut(v, "-")
+	f, err1 := strconv.Atoi(strings.TrimSuffix(from, "uhr"))
+	t, err2 := strconv.Atoi(strings.TrimSuffix(to, "uhr"))
+	if !ok || err1 != nil || err2 != nil || f < 0 || f > 23 || t < 0 || t > 23 || f == t {
+		return store.ChatSettings{}, false
+	}
+	return store.ChatSettings{QuietFrom: f, QuietTo: t}, true
 }
 
 // --- history ---

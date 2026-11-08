@@ -173,6 +173,17 @@ func (s *Store) AddPlate(ctx context.Context, chatID int64, plate, label string)
 	return n > 0, err
 }
 
+func (s *Store) SetLabel(ctx context.Context, chatID int64, plate, label string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE plates SET label = ? WHERE chat_id = ? AND plate = ?`, label, chatID, plate)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) RemovePlate(ctx context.Context, chatID int64, plate string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM plates WHERE chat_id = ? AND plate = ?`, chatID, plate)
 	if err != nil {

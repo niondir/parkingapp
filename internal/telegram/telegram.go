@@ -61,6 +61,17 @@ type InlineKeyboard struct {
 	InlineKeyboard [][]InlineButton `json:"inline_keyboard"`
 }
 
+// ReplyKeyboard is the keyboard shown instead of the system keyboard.
+type ReplyKeyboard struct {
+	Keyboard   [][]KeyboardButton `json:"keyboard"`
+	Resize     bool               `json:"resize_keyboard"`
+	Persistent bool               `json:"is_persistent"`
+}
+
+type KeyboardButton struct {
+	Text string `json:"text"`
+}
+
 type BotCommand struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
@@ -138,17 +149,31 @@ func (c *Client) Send(ctx context.Context, chatID int64, html string, kb *Inline
 
 // Push is Send with the option to deliver without sound.
 func (c *Client) Push(ctx context.Context, chatID int64, html string, kb *InlineKeyboard, silent bool) error {
-	p := map[string]any{
-		"chat_id":              chatID,
-		"text":                 html,
-		"parse_mode":           "HTML",
-		"link_preview_options": map[string]bool{"is_disabled": true},
-		"disable_notification": silent,
-	}
+	p := map[string]any{"disable_notification": silent}
 	if kb != nil {
 		p["reply_markup"] = kb
 	}
-	return c.call(ctx, "sendMessage", p, nil)
+	_, err := c.send(ctx, chatID, html, p)
+	return err
+}
+
+// SendMsg sends a message with any reply markup (nil for none) and returns its ID.
+func (c *Client) SendMsg(ctx context.Context, chatID int64, html string, markup any) (int64, error) {
+	p := map[string]any{}
+	if markup != nil {
+		p["reply_markup"] = markup
+	}
+	return c.send(ctx, chatID, html, p)
+}
+
+func (c *Client) send(ctx context.Context, chatID int64, html string, p map[string]any) (int64, error) {
+	p["chat_id"] = chatID
+	p["text"] = html
+	p["parse_mode"] = "HTML"
+	p["link_preview_options"] = map[string]bool{"is_disabled": true}
+	var m Message
+	err := c.call(ctx, "sendMessage", p, &m)
+	return m.MessageID, err
 }
 
 // Edit replaces text and keyboard of a message sent by the bot.

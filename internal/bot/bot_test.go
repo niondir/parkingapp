@@ -22,6 +22,7 @@ type sent struct {
 	kb     *telegram.InlineKeyboard
 	silent bool
 	edit   int64 // message ID for edits
+	markup any
 }
 
 type fakeTG struct {
@@ -29,6 +30,7 @@ type fakeTG struct {
 	msgs    []sent
 	pending []telegram.Update
 	offsets []int64
+	nextID  int64
 }
 
 func (f *fakeTG) GetMe(context.Context) (telegram.User, error) { return telegram.User{}, nil }
@@ -51,6 +53,14 @@ func (f *fakeTG) Push(_ context.Context, chat int64, text string, kb *telegram.I
 	defer f.mu.Unlock()
 	f.msgs = append(f.msgs, sent{chat: chat, text: text, kb: kb, silent: silent})
 	return nil
+}
+func (f *fakeTG) SendMsg(_ context.Context, chat int64, text string, markup any) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kb, _ := markup.(*telegram.InlineKeyboard)
+	f.msgs = append(f.msgs, sent{chat: chat, text: text, kb: kb, markup: markup})
+	f.nextID++
+	return f.nextID, nil
 }
 func (f *fakeTG) Edit(_ context.Context, chat, msgID int64, text string, kb *telegram.InlineKeyboard) error {
 	f.mu.Lock()

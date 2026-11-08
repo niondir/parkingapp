@@ -136,7 +136,24 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 
 func (b *Bot) handleAdminCallback(ctx context.Context, chatID, adminID int64, data string) bool {
 	kind, arg, _ := strings.Cut(data, ":")
-	if kind != "ua" && kind != "ub" {
+	switch kind {
+	case "au":
+		b.cmdUsers(ctx, chatID)
+		return true
+	case "as":
+		b.cmdStats(ctx, chatID)
+		return true
+	case "ab":
+		b.ask(ctx, chatID, inBroadcast, "", "", "📢 Welche Nachricht soll an alle Nutzer gehen?")
+		return true
+	case "abx":
+		if p := b.getPending(chatID); p != nil && p.kind == inBroadcastConfirm {
+			b.endPending(ctx, chatID, "")
+			b.cmdBroadcast(ctx, chatID, adminID, p.data)
+		}
+		return true
+	case "ua", "ub":
+	default:
 		return false
 	}
 	id, err := strconv.ParseInt(arg, 10, 64)
@@ -175,7 +192,8 @@ func (b *Bot) setUserStatus(ctx context.Context, chatID, adminID, userID int64, 
 	slog.Info("user status changed", "user", userID, "status", status, "admin", adminID)
 	switch status {
 	case store.UserAllowed:
-		b.reply(ctx, userID, "✅ Du wurdest freigeschaltet. /help zeigt, was ich kann.", nil)
+		b.reply(ctx, userID, "✅ Du wurdest freigeschaltet.", nil)
+		b.sendWelcome(ctx, userID)
 	case store.UserBlocked:
 		// Private chats have the user's ID as chat ID, so this stops all pushes.
 		if err := b.store.RemovePlates(ctx, userID); err != nil {
