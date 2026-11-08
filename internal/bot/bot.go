@@ -111,6 +111,7 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 	case u.Message != nil && u.Message.From != nil:
 		m := u.Message
 		if !b.allowed(m.From.ID) {
+			slog.Info("access denied", "user", m.From.ID, "username", m.From.Username, "name", m.From.FirstName)
 			b.reply(ctx, m.Chat.ID, fmt.Sprintf("⛔ Kein Zugriff. Deine Telegram-ID ist <code>%d</code> – bitte beim Betreiber freischalten lassen.", m.From.ID), nil)
 			return
 		}
