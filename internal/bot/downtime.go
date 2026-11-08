@@ -58,19 +58,8 @@ func (b *Bot) recoverDowntime(ctx context.Context) int64 {
 		slog.Info("dropped pending updates", "up_to", offset-1)
 	}
 
-	chats, err := b.store.Chats(ctx)
-	if err != nil {
-		slog.Error("list chats", "err", err)
-	}
-	seen := map[int64]bool{}
-	for _, ids := range [][]int64{chats, keys(b.cfg.Admins), keys(b.cfg.AllowedUsers)} {
-		for _, id := range ids {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			b.reply(ctx, id, offlineText(last, gap), nil)
-		}
+	for _, id := range b.allChats(ctx) {
+		b.reply(ctx, id, offlineText(last, gap), nil)
 	}
 	return offset
 }

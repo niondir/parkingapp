@@ -94,6 +94,22 @@ func fmtItem(it fairparken.ParkingItem, label string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// fmtResult renders a search hit including day tickets offered at the area.
+func fmtResult(r fairparken.SearchResult, label string) string {
+	s := fmtItem(r.AnprResult, label)
+	if len(r.Articles) == 0 {
+		return s
+	}
+	s += "\n\n🎫 <b>Zusätzlich buchbar</b> (auf der Bezahlseite):"
+	for _, a := range r.Articles {
+		s += "\n• " + esc(a.DisplayName())
+		if a.Price.Amount > 0 {
+			s += ": " + fmtEuro(a.Price.Amount/100)
+		}
+	}
+	return s
+}
+
 func itemKeyboard(plate string) *telegram.InlineKeyboard {
 	return &telegram.InlineKeyboard{InlineKeyboard: [][]telegram.InlineButton{
 		{{Text: "💳 Jetzt bezahlen", URL: fairparken.PayURL(plate)}},

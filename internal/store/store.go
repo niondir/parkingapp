@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -19,6 +20,22 @@ type Plate struct {
 	ChatID int64
 	Plate  string
 	Label  string
+	PlateSettings
+	CreatedAt time.Time
+}
+
+// PlateSettings are the notification settings of a chat for one plate.
+type PlateSettings struct {
+	Paused        bool          // no pushes at all
+	Remind        bool          // reminder before the payment window closes
+	PriceChange   bool          // push every price increase of an open session
+	PriceLimit    float64       // push when the fee reaches this value, 0 = off
+	DurationLimit time.Duration // push when parking takes longer, 0 = off
+}
+
+// ChatSettings are settings for all plates of a chat.
+type ChatSettings struct {
+	QuietFrom, QuietTo int // hours (local time); pushes in between are silent. Equal = off.
 }
 
 // User states for access control.
@@ -72,6 +89,11 @@ CREATE TABLE IF NOT EXISTS users (
 	status     TEXT    NOT NULL,
 	created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_settings (
+	chat_id    INTEGER PRIMARY KEY,
+	quiet_from INTEGER NOT NULL DEFAULT 0,
+	quiet_to   INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -93,7 +115,45 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// columns added after the first release
+var plateColumns = []struct{ name, def string }{
+	{"paused", "INTEGER NOT NULL DEFAULT 0"},
+	{"remind", "INTEGER NOT NULL DEFAULT 1"},
+	{"price_change", "INTEGER NOT NULL DEFAULT 0"},
+	{"price_limit", "REAL NOT NULL DEFAULT 0"},
+	{"duration_limit", "INTEGER NOT NULL DEFAULT 0"}, // seconds
+}
+
+func migrate(db *sql.DB) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('plates')`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		have[n] = true
+	}
+	rows.Close()
+	for _, c := range plateColumns {
+		if !have[c.name] {
+			if _, err := db.Exec(`ALTER TABLE plates ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -131,7 +191,7 @@ func (s *Store) CountPlates(ctx context.Context, chatID int64) (int, error) {
 }
 
 func (s *Store) Plates(ctx context.Context, chatID int64) ([]Plate, error) {
-	return s.queryPlates(ctx, `SELECT chat_id, plate, label FROM plates WHERE chat_id = ? ORDER BY created_at`, chatID)
+	return s.queryPlates(ctx, `WHERE chat_id = ? ORDER BY created_at`, chatID)
 }
 
 func (s *Store) HasPlate(ctx context.Context, chatID int64, plate string) (bool, error) {
@@ -142,12 +202,12 @@ func (s *Store) HasPlate(ctx context.Context, chatID int64, plate string) (bool,
 
 // Subscribers returns all chats watching a plate.
 func (s *Store) Subscribers(ctx context.Context, plate string) ([]Plate, error) {
-	return s.queryPlates(ctx, `SELECT chat_id, plate, label FROM plates WHERE plate = ?`, plate)
+	return s.queryPlates(ctx, `WHERE plate = ?`, plate)
 }
 
-// WatchedPlates returns every plate watched by at least one chat.
+// WatchedPlates returns every plate watched by at least one chat that isn't paused.
 func (s *Store) WatchedPlates(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT plate FROM plates ORDER BY plate`)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT plate FROM plates WHERE paused = 0 ORDER BY plate`)
 	if err != nil {
 		return nil, err
 	}
@@ -163,8 +223,36 @@ func (s *Store) WatchedPlates(ctx context.Context) ([]string, error) {
 	return res, rows.Err()
 }
 
-func (s *Store) queryPlates(ctx context.Context, q string, args ...any) ([]Plate, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
+// GetPlate returns one plate of a chat or ErrNotFound.
+func (s *Store) GetPlate(ctx context.Context, chatID int64, plate string) (Plate, error) {
+	res, err := s.queryPlates(ctx, `WHERE chat_id = ? AND plate = ?`, chatID, plate)
+	if err != nil {
+		return Plate{}, err
+	}
+	if len(res) == 0 {
+		return Plate{}, ErrNotFound
+	}
+	return res[0], nil
+}
+
+func (s *Store) SetPlateSettings(ctx context.Context, chatID int64, plate string, ps PlateSettings) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE plates SET paused = ?, remind = ?, price_change = ?, price_limit = ?, duration_limit = ?
+		 WHERE chat_id = ? AND plate = ?`,
+		ps.Paused, ps.Remind, ps.PriceChange, ps.PriceLimit, int64(ps.DurationLimit/time.Second), chatID, plate)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) queryPlates(ctx context.Context, where string, args ...any) ([]Plate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT chat_id, plate, label, paused, remind, price_change, price_limit, duration_limit, created_at
+		 FROM plates `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -172,12 +260,34 @@ func (s *Store) queryPlates(ctx context.Context, q string, args ...any) ([]Plate
 	var res []Plate
 	for rows.Next() {
 		var p Plate
-		if err := rows.Scan(&p.ChatID, &p.Plate, &p.Label); err != nil {
+		var dur, created int64
+		if err := rows.Scan(&p.ChatID, &p.Plate, &p.Label, &p.Paused, &p.Remind, &p.PriceChange,
+			&p.PriceLimit, &dur, &created); err != nil {
 			return nil, err
 		}
+		p.DurationLimit = time.Duration(dur) * time.Second
+		p.CreatedAt = time.Unix(created, 0)
 		res = append(res, p)
 	}
 	return res, rows.Err()
+}
+
+func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (ChatSettings, error) {
+	var cs ChatSettings
+	err := s.db.QueryRowContext(ctx, `SELECT quiet_from, quiet_to FROM chat_settings WHERE chat_id = ?`, chatID).
+		Scan(&cs.QuietFrom, &cs.QuietTo)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return cs, err
+}
+
+func (s *Store) SetChatSettings(ctx context.Context, chatID int64, cs ChatSettings) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO chat_settings (chat_id, quiet_from, quiet_to) VALUES (?, ?, ?)
+		 ON CONFLICT (chat_id) DO UPDATE SET quiet_from = excluded.quiet_from, quiet_to = excluded.quiet_to`,
+		chatID, cs.QuietFrom, cs.QuietTo)
+	return err
 }
 
 // OpenSessions returns the sessions of a plate that are not closed yet.
@@ -354,4 +464,62 @@ func (s *Store) Chats(ctx context.Context) ([]int64, error) {
 		res = append(res, id)
 	}
 	return res, rows.Err()
+}
+
+// History returns the sessions of the chat's plates, newest first. Only
+// sessions seen after the chat added the plate are included, so users don't
+// see what happened before they watched a plate.
+func (s *Store) History(ctx context.Context, chatID int64, since time.Time) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent
+		 FROM sessions s JOIN plates p ON p.plate = s.plate AND p.chat_id = ?
+		 WHERE s.first_seen >= p.created_at AND s.first_seen >= ?
+		 ORDER BY s.first_seen DESC`, chatID, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []Session
+	for rows.Next() {
+		var x Session
+		var first, last int64
+		if err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent); err != nil {
+			return nil, err
+		}
+		x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
+		res = append(res, x)
+	}
+	return res, rows.Err()
+}
+
+// Stats are counters for admins.
+type Stats struct {
+	Users        map[string]int
+	Chats        int
+	Plates       int
+	OpenSessions int
+	Sessions30d  int
+}
+
+func (s *Store) Stats(ctx context.Context) (Stats, error) {
+	st := Stats{Users: map[string]int{}}
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM users GROUP BY status`)
+	if err != nil {
+		return st, err
+	}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			rows.Close()
+			return st, err
+		}
+		st.Users[k] = n
+	}
+	rows.Close()
+	err = s.db.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(DISTINCT chat_id) FROM plates), (SELECT COUNT(*) FROM plates),
+		        (SELECT COUNT(*) FROM sessions WHERE closed = 0), (SELECT COUNT(*) FROM sessions WHERE first_seen >= ?)`,
+		time.Now().Add(-30*24*time.Hour).Unix()).Scan(&st.Chats, &st.Plates, &st.OpenSessions, &st.Sessions30d)
+	return st, err
 }

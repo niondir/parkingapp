@@ -133,8 +133,29 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 
 // Send sends an HTML formatted message. kb may be nil.
 func (c *Client) Send(ctx context.Context, chatID int64, html string, kb *InlineKeyboard) error {
+	return c.Push(ctx, chatID, html, kb, false)
+}
+
+// Push is Send with the option to deliver without sound.
+func (c *Client) Push(ctx context.Context, chatID int64, html string, kb *InlineKeyboard, silent bool) error {
 	p := map[string]any{
 		"chat_id":              chatID,
+		"text":                 html,
+		"parse_mode":           "HTML",
+		"link_preview_options": map[string]bool{"is_disabled": true},
+		"disable_notification": silent,
+	}
+	if kb != nil {
+		p["reply_markup"] = kb
+	}
+	return c.call(ctx, "sendMessage", p, nil)
+}
+
+// Edit replaces text and keyboard of a message sent by the bot.
+func (c *Client) Edit(ctx context.Context, chatID, messageID int64, html string, kb *InlineKeyboard) error {
+	p := map[string]any{
+		"chat_id":              chatID,
+		"message_id":           messageID,
 		"text":                 html,
 		"parse_mode":           "HTML",
 		"link_preview_options": map[string]bool{"is_disabled": true},
@@ -142,7 +163,7 @@ func (c *Client) Send(ctx context.Context, chatID int64, html string, kb *Inline
 	if kb != nil {
 		p["reply_markup"] = kb
 	}
-	return c.call(ctx, "sendMessage", p, nil)
+	return c.call(ctx, "editMessageText", p, nil)
 }
 
 func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {

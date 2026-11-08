@@ -17,8 +17,18 @@ Telegram-Bot für Parkplätze von [fair parken](https://www.fairparken.com/de-DE
 | `/check [Kennzeichen]` | jetzt prüfen; ein Kennzeichen ohne Befehl schicken geht auch |
 | `/tarife [Kennzeichen \| Parkplatz-ID]` | Tarife; Preise nur bei offenem Parkvorgang |
 | `/bezahlen [Kennzeichen]` | Link zur Bezahlseite |
+| `/verlauf [Kennzeichen]` | letzte 10 Parkvorgänge, Kosten pro Monat (6 Monate) |
+| `/rabatt CODE [Kennzeichen]` | Preis eines offenen Parkvorgangs mit Rabattcode |
+| `/kassenzettel` | Link zur offiziellen Seite, um eine Vertragsstrafe mit Kassenzettel anzufechten |
+| `/einstellungen [Kennzeichen]` | Pausieren, Frist-Erinnerung, jede Preiserhöhung melden (Buttons) |
+| `/alarm [Kennzeichen] 10` | Meldung, wenn die Gebühr 10 € erreicht (`aus` = abschalten) |
+| `/dauer [Kennzeichen] 3` | Meldung nach 3 h Parkdauer (`1,5`, `90m`, `aus`) |
+| `/ruhezeit 22-7` | Meldungen in der Zeit ohne Ton (`aus`) |
 | `/remove [Kennzeichen]` | Kennzeichen entfernen |
-| `/users`, `/allow ID`, `/block ID` | nur Admins, siehe [Zugang](#zugang) |
+| `/users`, `/allow ID`, `/block ID`, `/stats`, `/rundnachricht Text` | nur Admins, siehe [Zugang](#zugang) |
+
+Der Verlauf zeigt nur Parkvorgänge, die der Bot gesehen hat, nachdem der Nutzer das Kennzeichen hinzugefügt hat. Als Gebühr gilt der zuletzt gesehene Betrag.
+Pausierte Kennzeichen werden nicht abgefragt, solange niemand sonst sie aktiv überwacht.
 
 ## Betrieb
 
@@ -41,6 +51,10 @@ Die SQLite-Datenbank liegt im Volume `data`. Konfiguration siehe `.env.example`.
 
 Der Bot schreibt alle 30 s einen Zeitstempel in die DB. War er beim Start länger als `OFFLINE_NOTICE_AFTER` (Standard 5 min) weg, bekommen alle Nutzer eine Nachricht mit Beginn und Dauer des Ausfalls, und die in der Zeit bei Telegram aufgelaufenen Befehle werden verworfen. Nach kürzeren Neustarts (z. B. Deploy) werden sie normal abgearbeitet. Parkvorgänge aus der Ausfallzeit meldet der erste Abfragezyklus nach dem Start nach.
 
+## Überwachung von außen
+
+Fällt der ganze Server aus, kann der Bot das nicht melden. Dafür `HEALTHCHECK_URL` setzen (z. B. kostenloser Check bei healthchecks.io, Periode = `POLL_INTERVAL`, Grace ≈ 10 min). Der Bot pingt nach jeder Abfragerunde; schlagen alle Abfragen einer Runde fehl, ruft er `<url>/fail` auf. Healthchecks.io meldet sich dann per Mail, Telegram o. ä.
+
 Die eigene Telegram-ID steht im Log (`access denied`), sobald man dem Bot schreibt.
 
 Entwicklung: `go test ./...`, Live-Test gegen die echte API: `FAIRPARKEN_LIVE=1 go test ./internal/fairparken -run Live`.
@@ -57,6 +71,15 @@ Es gibt keine offizielle API. Die Endpunkte stammen aus dem JavaScript des Web-C
 | `https://pay.fairparken.com/plate/{Kennzeichen}` | Bezahlseite mit vorausgefülltem Kennzeichen |
 
 Felder eines Treffers (`anprResult`): `plate`, `areaGkz`, `quotaID`, `quotaAddress`, `tariffId`, `realUTC_IN`, `realUTC_OUT`, `price`, `originalPrice`, `voucherValue`, `orderType`.
+
+Weitere Endpunkte:
+
+| Endpunkt | Verwendung |
+|---|---|
+| `ApplyVoucherCode` mit `voucherCode` | Preis mit Rabattcode (`/rabatt`); danach setzt der Bot den Code wieder zurück |
+| `articles` im Suchergebnis | Zusatzprodukte wie Tagesgästekarten, `price.amount` in Cent (laut Mock-Daten im Web-Client) |
+| `https://kassenzettel.fairparken.com` (`api/FileNumber`, `api/UploadReceiptImage`, `api/SubmitForm`) | Vertragsstrafe anfechten; braucht reCAPTCHA, daher nur verlinkt |
+| `https://pay.fairparken.at` | gleiche API für Österreich, nicht eingebunden |
 
 Offene Punkte, erst mit einem echten Parkvorgang prüfbar:
 
