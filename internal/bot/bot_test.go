@@ -31,8 +31,8 @@ func (f *fakeTG) GetMe(context.Context) (telegram.User, error) { return telegram
 func (f *fakeTG) GetUpdates(context.Context, int64, int) ([]telegram.Update, error) {
 	return nil, nil
 }
-func (f *fakeTG) AnswerCallback(context.Context, string, string) error     { return nil }
-func (f *fakeTG) SetCommands(context.Context, []telegram.BotCommand) error { return nil }
+func (f *fakeTG) AnswerCallback(context.Context, string, string) error            { return nil }
+func (f *fakeTG) SetCommands(context.Context, []telegram.BotCommand, int64) error { return nil }
 func (f *fakeTG) Send(_ context.Context, chat int64, text string, kb *telegram.InlineKeyboard) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

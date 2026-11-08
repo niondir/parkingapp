@@ -38,17 +38,16 @@ func run() error {
 		RequestGap:   envDuration("REQUEST_GAP", time.Second),
 		RemindBefore: envDuration("REMIND_BEFORE", 12*time.Hour),
 		MaxPlates:    envInt("MAX_PLATES", 10),
-		AllowedUsers: map[int64]bool{},
 	}
 	if cfg.PollInterval < 30*time.Second {
 		return fmt.Errorf("POLL_INTERVAL must be at least 30s")
 	}
-	for _, s := range strings.FieldsFunc(os.Getenv("ALLOWED_USER_IDS"), func(r rune) bool { return r == ',' || r == ' ' }) {
-		id, err := strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return fmt.Errorf("ALLOWED_USER_IDS: %w", err)
-		}
-		cfg.AllowedUsers[id] = true
+	var err error
+	if cfg.AllowedUsers, err = envIDs("ALLOWED_USER_IDS"); err != nil {
+		return err
+	}
+	if cfg.Admins, err = envIDs("ADMIN_USER_IDS"); err != nil {
+		return err
 	}
 
 	dbPath := os.Getenv("DB_PATH")
@@ -63,8 +62,22 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	slog.Info("starting", "poll", cfg.PollInterval, "allowed_users", len(cfg.AllowedUsers), "db", dbPath)
+	slog.Info("starting", "poll", cfg.PollInterval, "admins", len(cfg.Admins), "allowed_users", len(cfg.AllowedUsers), "db", dbPath)
 	return bot.New(cfg, telegram.New(token), fairparken.New(), st).Run(ctx)
+}
+
+func envIDs(key string) (map[int64]bool, error) {
+	ids := map[int64]bool{}
+	for _, s := range strings.FieldsFunc(os.Getenv(key), func(r rune) bool { return r == ',' || r == ' ' }) {
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if id != 0 {
+			ids[id] = true
+		}
+	}
+	return ids, nil
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
