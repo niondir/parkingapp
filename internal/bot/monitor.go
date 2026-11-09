@@ -120,6 +120,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		prev[s.Key] = s
 	}
 	now := b.clock()
+	grace := b.grace(ctx)
 	seen := map[string]bool{}
 	for _, r := range res {
 		it := r.AnprResult
@@ -139,13 +140,13 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		case created:
 			slog.Info("new session", "plate", plate, "key", key)
 			b.notify(ctx, plate, skipChat, nil, func(p store.Plate) string {
-				return "🅿️ <b>Neuer Parkvorgang erkannt</b>\n\n" + fmtResult(r, p.Label, now)
+				return "🅿️ <b>Neuer Parkvorgang erkannt</b>\n\n" + fmtResult(r, p.Label, now, grace)
 			}, true)
 		case reopened:
 			// It was reported as finished, but the API returns it again.
 			slog.Warn("session reappeared", "plate", plate, "key", key)
 			b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
-				return "⚠️ <b>Korrektur:</b> Der Parkvorgang ist doch noch offen.\n\n" + fmtResult(r, p.Label, now)
+				return "⚠️ <b>Korrektur:</b> Der Parkvorgang ist doch noch offen.\n\n" + fmtResult(r, p.Label, now, grace)
 			}, true)
 		}
 		s, had := prev[key]
@@ -166,7 +167,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 			slog.Info("exit", "plate", plate, "key", key, "price", it.Price)
 			if it.Price != nil && *it.Price > 0 {
 				b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
-					return "🚙 <b>Ausfahrt erkannt</b> – es ist noch eine Gebühr offen.\n\n" + fmtResult(r, p.Label, now)
+					return "🚙 <b>Ausfahrt erkannt</b> – es ist noch eine Gebühr offen.\n\n" + fmtResult(r, p.Label, now, grace)
 				}, true)
 			}
 		}
@@ -195,21 +196,59 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		}
 		var it fairparken.ParkingItem
 		_ = json.Unmarshal([]byte(s.Item), &it)
-		// Gone while still parked: the camera saw the car leave without a fee
-		// due. Gone after an exit with a fee due: it was paid.
-		outcome := store.OutcomeNoFee
-		if !s.ExitedAt.IsZero() && it.Price != nil && *it.Price > 0 {
-			outcome = store.OutcomePaid
-		}
+		ci := closeOutcome(s, it, now, grace)
+		outcome := ci.outcome
 		if err := b.store.CloseSession(ctx, plate, s.Key, outcome); err != nil {
 			return err
 		}
 		slog.Info("session gone", "plate", plate, "key", s.Key, "outcome", outcome)
 		b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
-			return fmtClosed(it, p.Label, outcome, s.LastSeen)
+			return fmtClosed(it, p.Label, ci)
 		}, false)
 	}
 	return nil
+}
+
+// closeOutcome decides how a session that disappeared has ended. Gone after
+// an exit with a fee due: paid. Gone while still parked: the car left without
+// a fee due – free within the grace period, otherwise paid before leaving.
+// The exit happened between the last check that saw the car parked and the
+// first check without the session, so the duration is only known as a range.
+func closeOutcome(s store.Session, it fairparken.ParkingItem, now time.Time, grace time.Duration) closeInfo {
+	ci := closeInfo{grace: grace}
+	in, okIn := it.In()
+	last := s.LastSeen
+	if out, ok := it.Out(); ok {
+		last = out
+	}
+	gone := s.MissingSince
+	if gone.IsZero() {
+		gone = now
+	}
+	if okIn {
+		ci.min, ci.max = last.Sub(in), gone.Sub(in)
+	}
+	paidPrice := it.Price != nil && *it.Price > 0
+	switch {
+	case !s.ExitedAt.IsZero():
+		if okIn {
+			ci.min = s.ExitedAt.Sub(in)
+			ci.max = ci.min
+		}
+		ci.outcome = store.OutcomeNoFee
+		if paidPrice {
+			ci.outcome = store.OutcomePaid
+		}
+	case !okIn || !paidPrice:
+		ci.outcome = store.OutcomeNoFee
+	case ci.max <= grace:
+		ci.outcome = store.OutcomeNoFee
+	case ci.min > grace:
+		ci.outcome = store.OutcomePrepaid
+	default:
+		ci.outcome = store.OutcomeUncertain
+	}
+	return ci
 }
 
 // missingToClose is the number of consecutive checks without a session
@@ -263,7 +302,7 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 	b.notify(ctx, plate, 0, func(p store.Plate) bool {
 		return p.PriceLimit > 0 && it.Price != nil && oldPrice < p.PriceLimit && newPrice >= p.PriceLimit
 	}, func(p store.Plate) string {
-		return fmt.Sprintf("💸 <b>Preisalarm</b>: Die Gebühr hat %s erreicht.\n\n%s", fmtEuro(p.PriceLimit), fmtItem(it, p.Label, now))
+		return fmt.Sprintf("💸 <b>Preisalarm</b>: Die Gebühr hat %s erreicht.\n\n%s", fmtEuro(p.PriceLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
 	}, true)
 
 	if !isNew && it.Price != nil && old.Price != nil && newPrice > oldPrice {
@@ -278,7 +317,7 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 	b.notify(ctx, plate, 0, func(p store.Plate) bool {
 		return p.DurationLimit > 0 && oldDur < p.DurationLimit && newDur >= p.DurationLimit
 	}, func(p store.Plate) string {
-		return fmt.Sprintf("⏱ <b>Parkdauer-Alarm</b>: %s parkt seit über %s.\n\n%s", plateTitle(plate, p.Label), fmtDuration(p.DurationLimit), fmtItem(it, p.Label, now))
+		return fmt.Sprintf("⏱ <b>Parkdauer-Alarm</b>: %s parkt seit über %s.\n\n%s", plateTitle(plate, p.Label), fmtDuration(p.DurationLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
 	}, true)
 }
 
@@ -303,7 +342,7 @@ func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.
 			return
 		}
 		b.notify(ctx, plate, 0, func(p store.Plate) bool { return p.Remind }, func(p store.Plate) string {
-			return fmt.Sprintf("⚠️ <b>Noch nicht bezahlt</b> – nur noch ca. %s Zeit.\n\n%s", fmtDuration(left), fmtItem(it, p.Label, time.Now()))
+			return fmt.Sprintf("⚠️ <b>Noch nicht bezahlt</b> – nur noch ca. %s Zeit.\n\n%s", fmtDuration(left), fmtItem(it, p.Label, time.Now(), b.grace(ctx)))
 		}, true)
 		return
 	}

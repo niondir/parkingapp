@@ -325,9 +325,17 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 			m.sum += price
 			state = " · " + fmtEuro(price)
 			end = s.LastSeen
+		case store.OutcomePrepaid:
+			m.sum += price
+			state = " · " + fmtEuro(price) + " (vor Ausfahrt bezahlt)"
+			end = s.LastSeen
+		case store.OutcomeUncertain:
+			m.free++
+			state = " · kostenlos oder vor Ausfahrt bezahlt"
+			end = s.LastSeen
 		default:
 			m.free++
-			state = " · ohne Gebühr"
+			state = " · kostenlos"
 			end = s.LastSeen
 		}
 		if len(lines) < 10 {
@@ -357,10 +365,10 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 		t, _ := time.Parse("2006-01", k)
 		fmt.Fprintf(&sb, "\n%s: %d × · %s", t.Format("01/2006"), m.count, fmtEuro(m.sum))
 		if m.free > 0 {
-			fmt.Fprintf(&sb, " (%d ohne Gebühr)", m.free)
+			fmt.Fprintf(&sb, " (davon %d kostenlos)", m.free)
 		}
 	}
-	sb.WriteString("\n\n<i>„Ohne Gebühr“: ausgefahren, ohne dass etwas offen war – in der Freiparkzeit oder vorher am Automaten bezahlt. Gebühr = zuletzt vom Bot gesehener Betrag.</i>")
+	fmt.Fprintf(&sb, "\n\n<i>Kostenlos = innerhalb der Kulanzzeit (%s) ausgefahren. Gebühr = zuletzt vom Bot gesehener Betrag.</i>", fmtDuration(b.grace(ctx)))
 	b.reply(ctx, chatID, sb.String(), nil)
 }
 

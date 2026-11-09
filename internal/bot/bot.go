@@ -23,6 +23,7 @@ type Config struct {
 	MaxPlates    int           // per chat
 	// After a downtime longer than this, users are informed and pending commands are dropped. 0 = off.
 	OfflineNotice  time.Duration
+	GracePeriod    time.Duration  // default for the admin setting: leaving within this time is free
 	HealthcheckURL string         // pinged after every poll cycle, e.g. https://hc-ping.com/<uuid>
 	AllowedUsers   map[int64]bool // always allowed, in addition to users approved by an admin
 	Admins         map[int64]bool // may approve users; if none and AllowedUsers is empty, the bot is open
@@ -147,7 +148,7 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 			return
 		}
 		_ = b.tg.AnswerCallback(ctx, q.ID, "")
-		if b.isAdmin(q.From.ID) && b.handleAdminCallback(ctx, q.Message.Chat.ID, q.From.ID, q.Data) {
+		if b.isAdmin(q.From.ID) && b.handleAdminCallback(ctx, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, q.Data) {
 			return
 		}
 		b.handleCallback(ctx, q.Message.Chat.ID, q.Message.MessageID, q.Data)
@@ -423,7 +424,7 @@ func (b *Bot) cmdCheck(ctx context.Context, chatID int64, args string) {
 			if !watched {
 				kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}})
 			}
-			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label, time.Now()), kb)
+			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label, time.Now(), b.grace(ctx)), kb)
 		}
 	}
 }

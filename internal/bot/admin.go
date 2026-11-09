@@ -19,6 +19,7 @@ var adminCommands = []telegram.BotCommand{
 	{Command: "block", Description: "Admin: Nutzer sperren (/block ID)"},
 	{Command: "stats", Description: "Admin: Statistik und Abfragefehler"},
 	{Command: "rundnachricht", Description: "Admin: Nachricht an alle Nutzer"},
+	{Command: "kulanz", Description: "Admin: Kulanzzeit (/kulanz 15)"},
 }
 
 func (b *Bot) isAdmin(userID int64) bool { return b.cfg.Admins[userID] }
@@ -117,6 +118,17 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 		b.cmdStats(ctx, chatID)
 	case "/rundnachricht", "/broadcast":
 		b.cmdBroadcast(ctx, chatID, adminID, args)
+	case "/kulanz", "/grace":
+		if args == "" {
+			b.showGraceMenu(ctx, chatID, 0, "")
+			return true
+		}
+		m, ok := parseMinutes(args)
+		if !ok {
+			b.reply(ctx, chatID, "Bitte so: <code>/kulanz 15</code> (Minuten)", nil)
+			return true
+		}
+		b.setGrace(ctx, chatID, 0, adminID, m)
 	case "/allow", "/block":
 		id, err := strconv.ParseInt(args, 10, 64)
 		if err != nil {
@@ -134,7 +146,7 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 	return true
 }
 
-func (b *Bot) handleAdminCallback(ctx context.Context, chatID, adminID int64, data string) bool {
+func (b *Bot) handleAdminCallback(ctx context.Context, chatID, msgID, adminID int64, data string) bool {
 	kind, arg, _ := strings.Cut(data, ":")
 	switch kind {
 	case "au":
@@ -151,6 +163,17 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID, adminID int64, da
 			b.endPending(ctx, chatID, "")
 			b.cmdBroadcast(ctx, chatID, adminID, p.data)
 		}
+		return true
+	case "gr":
+		b.showGraceMenu(ctx, chatID, msgID, "")
+		return true
+	case "grv":
+		if m, err := strconv.Atoi(arg); err == nil {
+			b.setGrace(ctx, chatID, msgID, adminID, m)
+		}
+		return true
+	case "gri":
+		b.ask(ctx, chatID, inGrace, "", "", "⏳ Wie viele Minuten Kulanzzeit? Z. B. <code>15</code>")
 		return true
 	case "ua", "ub":
 	default:
@@ -325,4 +348,67 @@ func (b *Bot) cmdBroadcast(ctx context.Context, chatID, adminID int64, text stri
 		msg += fmt.Sprintf(" %d fehlgeschlagen (z. B. Bot blockiert).", failed)
 	}
 	b.reply(ctx, chatID, msg, nil)
+}
+
+const graceKey = "grace_minutes"
+
+// grace is the grace period: the admin setting or the configured default.
+func (b *Bot) grace(ctx context.Context) time.Duration {
+	v, err := b.store.Meta(ctx, graceKey)
+	if err == nil {
+		if m, err := strconv.Atoi(v); err == nil && m >= 0 {
+			return time.Duration(m) * time.Minute
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		slog.Warn("grace period", "err", err)
+	}
+	return b.cfg.GracePeriod
+}
+
+var gracePresets = []int{0, 5, 10, 15, 20, 30} // minutes
+
+func (b *Bot) showGraceMenu(ctx context.Context, chatID, msgID int64, note string) {
+	k := kb()
+	var r []telegram.InlineButton
+	for i, m := range gracePresets {
+		r = append(r, btn(fmt.Sprintf("%d min", m), fmt.Sprintf("grv:%d", m)))
+		if i%3 == 2 {
+			k.InlineKeyboard = append(k.InlineKeyboard, r)
+			r = nil
+		}
+	}
+	k.InlineKeyboard = append(k.InlineKeyboard, row(btn("✏️ Anderer Wert", "gri"), btn("⬅️ Hauptmenü", "m")))
+	text := fmt.Sprintf("⏳ <b>Kulanzzeit</b>: %s\n\nFährt ein Auto innerhalb dieser Zeit nach der Einfahrt wieder aus, gilt der Parkvorgang als kostenlos. "+
+		"Verschwindet ein Vorgang erst später, geht der Bot davon aus, dass vor der Ausfahrt bezahlt wurde. Gilt für alle Parkplätze und Nutzer.",
+		fmtDuration(b.grace(ctx)))
+	if note != "" {
+		text = note + "\n\n" + text
+	}
+	b.show(ctx, chatID, msgID, text, k)
+}
+
+func (b *Bot) setGrace(ctx context.Context, chatID, msgID, adminID int64, minutes int) {
+	if minutes < 0 || minutes > 24*60 {
+		b.reply(ctx, chatID, "Bitte 0 bis 1440 Minuten.", nil)
+		return
+	}
+	if err := b.store.SetMeta(ctx, graceKey, strconv.Itoa(minutes)); err != nil {
+		b.fail(ctx, chatID, "Speichern", err)
+		return
+	}
+	slog.Info("grace period changed", "minutes", minutes, "admin", adminID)
+	b.showGraceMenu(ctx, chatID, msgID, "✅ Gespeichert.")
+}
+
+// parseMinutes parses "15", "15 min" or "1h".
+func parseMinutes(v string) (int, bool) {
+	v = strings.ToLower(strings.ReplaceAll(v, " ", ""))
+	v = strings.TrimSuffix(strings.TrimSuffix(v, "minuten"), "min")
+	if m, err := strconv.Atoi(v); err == nil {
+		return m, m >= 0 && m <= 24*60
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 && d <= 24*time.Hour {
+		return int(d / time.Minute), true
+	}
+	return 0, false
 }

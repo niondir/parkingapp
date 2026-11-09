@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/niondir/parkingapp/internal/fairparken"
 	"github.com/niondir/parkingapp/internal/store"
 )
 
@@ -35,7 +36,7 @@ func TestFreeExit(t *testing.T) {
 	if len(m) != 1 {
 		t.Fatalf("got %s", texts(m))
 	}
-	for _, want := range []string{"Teststr. 1, Hamburg (Kaufland)", "Parkt seit:", "Bei Zahlung jetzt: <b>3,00 €</b> (deckt bis", "Freiparkzeit", "Rabattcode möglich"} {
+	for _, want := range []string{"Teststr. 1, Hamburg (Kaufland)", "Parkt seit:", "Bei Zahlung jetzt: <b>3,00 €</b> (deckt bis", "Kostenlos, wenn du bis", "Kulanzzeit 15 min", "Rabattcode möglich"} {
 		if !strings.Contains(m[0].text, want) {
 			t.Errorf("missing %q in %s", want, m[0].text)
 		}
@@ -57,13 +58,13 @@ func TestFreeExit(t *testing.T) {
 	}
 	b.pollAll(ctx)
 	m = tg.take()
-	if len(m) != 1 || !strings.Contains(m[0].text, "ohne dass eine Gebühr offen ist") || strings.Contains(m[0].text, "3,00 €") {
+	if len(m) != 1 || !strings.Contains(m[0].text, "kostenlos ausgefahren") || strings.Contains(m[0].text, "3,00 €") {
 		t.Fatalf("got %s", texts(m))
 	}
 
 	b.handleText(ctx, 1, "/verlauf")
 	m = tg.take()
-	if !strings.Contains(m[0].text, "· ohne Gebühr") || !strings.Contains(m[0].text, "1 × · 0,00 € (1 ohne Gebühr)") {
+	if !strings.Contains(m[0].text, "· kostenlos") || !strings.Contains(m[0].text, "1 × · 0,00 € (davon 1 kostenlos)") {
 		t.Fatalf("history: %s", m[0].text)
 	}
 }
@@ -114,7 +115,7 @@ func TestExitWithFee(t *testing.T) {
 		t.Fatalf("got %s", texts(m))
 	}
 	b.handleText(ctx, 1, "/verlauf")
-	if m := tg.take(); !strings.Contains(m[0].text, "1 × · 6,00 €") || strings.Contains(m[0].text, "ohne Gebühr)") {
+	if m := tg.take(); !strings.Contains(m[0].text, "1 × · 6,00 €") || strings.Contains(m[0].text, "kostenlos)") {
 		t.Fatalf("history: %s", m[0].text)
 	}
 }
@@ -192,7 +193,107 @@ func TestExitWithoutFee(t *testing.T) {
 	api.set("HHKF860E")
 	b.pollAll(ctx)
 	b.pollAll(ctx)
-	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "ohne dass eine Gebühr offen ist") {
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "kostenlos ausgefahren") {
 		t.Fatalf("got %s", texts(m))
+	}
+}
+
+func TestGracePeriodOutcomes(t *testing.T) {
+	in := time.Date(2026, 11, 9, 7, 0, 0, 0, time.UTC)
+	item := func(lastOut time.Time) fairparken.ParkingItem {
+		s := liveSession(in)
+		s["realUTC_IN"] = utc(in)
+		s["realUTC_OUT"] = utc(lastOut)
+		return mustItem(t, s)
+	}
+	grace := 15 * time.Minute
+	for _, c := range []struct {
+		name          string
+		lastOut, gone time.Time
+		exited        bool
+		want          string
+	}{
+		{"short stay", in.Add(6 * time.Minute), in.Add(9 * time.Minute), false, store.OutcomeNoFee},
+		{"long stay", in.Add(40 * time.Minute), in.Add(43 * time.Minute), false, store.OutcomePrepaid},
+		{"around the limit", in.Add(13 * time.Minute), in.Add(17 * time.Minute), false, store.OutcomeUncertain},
+		{"paid after exit", in.Add(40 * time.Minute), in.Add(90 * time.Minute), true, store.OutcomePaid},
+	} {
+		s := store.Session{LastSeen: c.lastOut.Add(30 * time.Second), MissingSince: c.gone}
+		if c.exited {
+			s.ExitedAt = c.lastOut
+		}
+		ci := closeOutcome(s, item(c.lastOut), c.gone.Add(3*time.Minute), grace)
+		if ci.outcome != c.want {
+			t.Errorf("%s: got %s want %s (%v–%v)", c.name, ci.outcome, c.want, ci.min, ci.max)
+		}
+		msg := fmtClosed(item(c.lastOut), "", ci)
+		if c.want == store.OutcomePrepaid && (!strings.Contains(msg, "vor der Ausfahrt bezahlt") || !strings.Contains(msg, "3,00 € (zuletzt angezeigt)")) {
+			t.Errorf("prepaid message: %s", msg)
+		}
+		if c.want == store.OutcomeUncertain && !strings.Contains(msg, "13 min bis 17 min") {
+			t.Errorf("uncertain message: %s", msg)
+		}
+	}
+}
+
+func TestLongStayCountsAsPaid(t *testing.T) {
+	ctx := context.Background()
+	b, tg, api := setup(t)
+	b.handleText(ctx, 1, "/add HHKF860E")
+	tg.take()
+	api.set("HHKF860E", liveSession(time.Now().Add(-50*time.Minute)))
+	b.pollAll(ctx)
+	if m := tg.take(); strings.Contains(m[0].text, "Kostenlos, wenn") {
+		t.Fatalf("grace period is over, no hint: %s", m[0].text)
+	}
+	api.set("HHKF860E")
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "vermutlich vor der Ausfahrt bezahlt") {
+		t.Fatalf("got %s", texts(m))
+	}
+	b.handleText(ctx, 1, "/verlauf")
+	if m := tg.take(); !strings.Contains(m[0].text, "3,00 € (vor Ausfahrt bezahlt)") || !strings.Contains(m[0].text, "1 × · 3,00 €") {
+		t.Fatalf("history: %s", m[0].text)
+	}
+}
+
+func TestGraceAdmin(t *testing.T) {
+	ctx := context.Background()
+	b, tg, _ := setup(t)
+	b.cfg.Admins = map[int64]bool{100: true}
+
+	b.handle(ctx, msg(100, "/menu"))
+	if m := tg.take(); !has(buttons(m[0]), "gr") {
+		t.Fatalf("admin menu: %v", buttons(m[0]))
+	}
+	b.handle(ctx, click(100, "gr"))
+	if m := tg.take(); !strings.Contains(m[0].text, "Kulanzzeit</b>: 15 min") || !has(buttons(m[0]), "grv:30") {
+		t.Fatalf("got %s %v", m[0].text, buttons(m[0]))
+	}
+	b.handle(ctx, click(100, "grv:30"))
+	tg.take()
+	if g := b.grace(ctx); g != 30*time.Minute {
+		t.Fatalf("grace %v", g)
+	}
+	b.handle(ctx, click(100, "gri"))
+	tg.take()
+	b.handle(ctx, msg(100, "abc"))
+	tg.take()
+	b.handle(ctx, msg(100, "20 min"))
+	if m := tg.take(); !strings.Contains(texts(m), "Kulanzzeit</b>: 20 min") {
+		t.Fatalf("got %s", texts(m))
+	}
+	b.handle(ctx, msg(100, "/kulanz 0"))
+	tg.take()
+	if g := b.grace(ctx); g != 0 {
+		t.Fatalf("grace %v", g)
+	}
+
+	// Only admins.
+	b.handle(ctx, msg(1, "/kulanz 99"))
+	b.handle(ctx, click(1, "grv:99"))
+	if g := b.grace(ctx); g != 0 {
+		t.Fatalf("non-admin changed grace to %v", g)
 	}
 }

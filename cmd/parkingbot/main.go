@@ -40,6 +40,7 @@ func run() error {
 		MaxPlates:      envInt("MAX_PLATES", 10),
 		OfflineNotice:  envDuration("OFFLINE_NOTICE_AFTER", 5*time.Minute),
 		HealthcheckURL: strings.TrimRight(os.Getenv("HEALTHCHECK_URL"), "/"),
+		GracePeriod:    envDuration("GRACE_PERIOD", 15*time.Minute),
 	}
 	if cfg.PollInterval < 30*time.Second {
 		return fmt.Errorf("POLL_INTERVAL must be at least 30s")
