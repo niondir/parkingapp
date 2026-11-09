@@ -12,8 +12,11 @@ import (
 	"github.com/niondir/parkingapp/internal/telegram"
 )
 
-// PayWindow is how long a session can be paid online after leaving.
+// PayWindow is how long a session can be paid online after leaving (AGB 3.3).
 const PayWindow = 48 * time.Hour
+
+// PayExitWindow is the time to leave after paying (AGB 3.2).
+const PayExitWindow = 15 * time.Minute
 
 var berlin = mustLoad("Europe/Berlin")
 
@@ -103,7 +106,9 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time, grace time.D
 	}
 	if parked {
 		if free := in.Add(grace); okIn && grace > 0 && at.Before(free) {
-			fmt.Fprintf(&b, "ℹ️ Kostenlos, wenn du bis %s ausfährst (Kulanzzeit %s).\n", free.In(berlin).Format("15:04"), fmtDuration(grace))
+			fmt.Fprintf(&b, "ℹ️ Kostenlos, wenn du bis %s ausfährst (Karenzzeit %s).\n", free.In(berlin).Format("15:04"), fmtDuration(grace))
+		} else {
+			fmt.Fprintf(&b, "ℹ️ Nach dem Bezahlen hast du %s zum Ausfahren.\n", fmtDuration(PayExitWindow))
 		}
 	} else if okOut {
 		fmt.Fprintf(&b, "⌛ Online zahlbar bis ca. %s\n", fmtTime(out.Add(PayWindow)))
@@ -133,13 +138,13 @@ func fmtClosed(it fairparken.ParkingItem, label string, ci closeInfo) string {
 	case store.OutcomePaid:
 		fmt.Fprintf(&b, "✅ Parkvorgang von %s ist bezahlt.", title)
 	case store.OutcomePrepaid:
-		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also länger als die Kulanzzeit (%s) – vermutlich vor der Ausfahrt bezahlt.",
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Bei einer Parkdauer von %s (länger als die Karenzzeit von %s) war laut AGB eine Zahlung fällig – also vermutlich vor der Ausfahrt bezahlt.",
 			title, dur, fmtDuration(ci.grace))
 	case store.OutcomeUncertain:
-		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also um die Kulanzzeit (%s) herum – kostenlos oder vor der Ausfahrt bezahlt.",
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also um die Karenzzeit (%s) herum – kostenlos oder vor der Ausfahrt bezahlt.",
 			title, dur, fmtDuration(ci.grace))
 	default:
-		fmt.Fprintf(&b, "✅ %s ist kostenlos ausgefahren (Parkdauer %s, Kulanzzeit %s).", title, dur, fmtDuration(ci.grace))
+		fmt.Fprintf(&b, "✅ %s ist kostenlos ausgefahren (Parkdauer %s, Karenzzeit %s).", title, dur, fmtDuration(ci.grace))
 	}
 	if loc := it.Location(); loc != "" {
 		fmt.Fprintf(&b, "\n📍 %s", esc(loc))

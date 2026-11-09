@@ -67,6 +67,8 @@ const (
 	inBroadcast
 	inBroadcastConfirm
 	inGrace
+	inFeedback
+	inFeedbackReply
 )
 
 const inputTimeout = 15 * time.Minute
@@ -212,6 +214,23 @@ func (b *Bot) handleInput(ctx context.Context, chatID int64, p *pending, text st
 		}
 		b.endPending(ctx, chatID, fmt.Sprintf("→ %d min", m))
 		b.setGrace(ctx, chatID, 0, chatID, m)
+	case inFeedback:
+		if strings.TrimSpace(text) == "" {
+			b.retry(ctx, chatID, "Bitte eine Nachricht schicken.")
+			return
+		}
+		b.endPending(ctx, chatID, "")
+		b.saveFeedback(ctx, chatID, text)
+	case inFeedbackReply:
+		if !b.isAdmin(chatID) {
+			b.endPending(ctx, chatID, "")
+			return
+		}
+		id, err := strconv.ParseInt(p.data, 10, 64)
+		b.endPending(ctx, chatID, "")
+		if err == nil {
+			b.saveFeedbackReply(ctx, chatID, id, text)
+		}
 	case inBroadcastConfirm:
 		b.retry(ctx, chatID, "Bitte mit „Senden“ bestätigen.")
 	}
@@ -265,12 +284,16 @@ func (b *Bot) showMain(ctx context.Context, chatID, msgID int64) {
 		row(btn("🚗 Meine Kennzeichen", "ml"), btn("➕ Hinzufügen", "add")),
 		row(btn("🔄 Jetzt prüfen", "chk"), btn("🔔 Alarme", "al")),
 		row(btn("📒 Verlauf", "hist"), btn("🧾 Kassenzettel", "rc")),
-		row(btn("❓ Hilfe", "help")),
+		row(btn("💬 Feedback", "fb"), btn("❓ Hilfe", "help")),
 	)
 	if b.isAdmin(chatID) {
+		inbox := "📥 Feedback"
+		if n, err := b.store.CountOpenFeedback(ctx); err == nil && n > 0 {
+			inbox = fmt.Sprintf("📥 Feedback (%d)", n)
+		}
 		k.InlineKeyboard = append(k.InlineKeyboard,
-			row(btn("👥 Nutzer", "au"), btn("📊 Statistik", "as")),
-			row(btn("📢 Rundnachricht", "ab"), btn("⏳ Kulanzzeit", "gr")))
+			row(btn("👥 Nutzer", "au"), btn("📊 Statistik", "as"), btn("📈 Nutzung", "us:30")),
+			row(btn(inbox, "fba"), btn("📢 Rundnachricht", "ab"), btn("⏳ Karenzzeit", "gr")))
 	}
 	b.show(ctx, chatID, msgID, text, k)
 }
@@ -618,6 +641,12 @@ func (b *Bot) handleMenuCallback(ctx context.Context, chatID, msgID int64, kind,
 		b.cmdReceipt(ctx, chatID)
 	case "help":
 		b.cmdHelp(ctx, chatID)
+	case "fb":
+		b.showFeedbackMenu(ctx, chatID, msgID)
+	case "fbn":
+		b.askFeedback(ctx, chatID)
+	case "fbm":
+		b.showOwnFeedback(ctx, chatID, msgID)
 	case "x":
 		if b.getPending(chatID) != nil {
 			b.endPending(ctx, chatID, "✖️ Abgebrochen.")

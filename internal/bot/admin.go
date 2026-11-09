@@ -19,7 +19,8 @@ var adminCommands = []telegram.BotCommand{
 	{Command: "block", Description: "Admin: Nutzer sperren (/block ID)"},
 	{Command: "stats", Description: "Admin: Statistik und Abfragefehler"},
 	{Command: "rundnachricht", Description: "Admin: Nachricht an alle Nutzer"},
-	{Command: "kulanz", Description: "Admin: Kulanzzeit (/kulanz 15)"},
+	{Command: "karenz", Description: "Admin: Karenzzeit (/karenz 15)"},
+	{Command: "nutzung", Description: "Admin: Nutzung der Funktionen (/nutzung 30)"},
 }
 
 func (b *Bot) isAdmin(userID int64) bool { return b.cfg.Admins[userID] }
@@ -118,14 +119,20 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 		b.cmdStats(ctx, chatID)
 	case "/rundnachricht", "/broadcast":
 		b.cmdBroadcast(ctx, chatID, adminID, args)
-	case "/kulanz", "/grace":
+	case "/nutzung", "/usage":
+		days, err := strconv.Atoi(args)
+		if err != nil || days < 1 || days > 366 {
+			days = 30
+		}
+		b.showUsage(ctx, chatID, 0, days)
+	case "/karenz", "/kulanz", "/grace":
 		if args == "" {
 			b.showGraceMenu(ctx, chatID, 0, "")
 			return true
 		}
 		m, ok := parseMinutes(args)
 		if !ok {
-			b.reply(ctx, chatID, "Bitte so: <code>/kulanz 15</code> (Minuten)", nil)
+			b.reply(ctx, chatID, "Bitte so: <code>/karenz 15</code> (Minuten)", nil)
 			return true
 		}
 		b.setGrace(ctx, chatID, 0, adminID, m)
@@ -167,13 +174,22 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID, msgID, adminID in
 	case "gr":
 		b.showGraceMenu(ctx, chatID, msgID, "")
 		return true
+	case "us":
+		days, err := strconv.Atoi(arg)
+		if err != nil || days < 1 || days > 366 {
+			days = 30
+		}
+		b.showUsage(ctx, chatID, msgID, days)
+		return true
+	case "fba", "fbd", "fbs", "fbr":
+		return b.handleFeedbackAdminCallback(ctx, chatID, msgID, adminID, kind, arg)
 	case "grv":
 		if m, err := strconv.Atoi(arg); err == nil {
 			b.setGrace(ctx, chatID, msgID, adminID, m)
 		}
 		return true
 	case "gri":
-		b.ask(ctx, chatID, inGrace, "", "", "⏳ Wie viele Minuten Kulanzzeit? Z. B. <code>15</code>")
+		b.ask(ctx, chatID, inGrace, "", "", "⏳ Wie viele Minuten Karenzzeit? Z. B. <code>15</code>")
 		return true
 	case "ua", "ub":
 	default:
@@ -287,7 +303,11 @@ func (b *Bot) cmdStats(ctx context.Context, chatID int64) {
 	fmt.Fprintf(&sb, "Nutzer: %d freigeschaltet, %d angefragt, %d gesperrt, %d Admins\n",
 		st.Users[store.UserAllowed], st.Users[store.UserPending], st.Users[store.UserBlocked], len(b.cfg.Admins))
 	fmt.Fprintf(&sb, "Chats mit Kennzeichen: %d, Kennzeichen: %d\n", st.Chats, st.Plates)
-	fmt.Fprintf(&sb, "Offene Parkvorgänge: %d, Parkvorgänge 30 Tage: %d\n\n", st.OpenSessions, st.Sessions30d)
+	fmt.Fprintf(&sb, "Offene Parkvorgänge: %d, Parkvorgänge 30 Tage: %d\n", st.OpenSessions, st.Sessions30d)
+	if n, err := b.store.CountOpenFeedback(ctx); err == nil {
+		fmt.Fprintf(&sb, "Offenes Feedback: %d\n", n)
+	}
+	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "Läuft seit: %s (%s)\n", fmtTime(ps.Started), fmtGap(time.Since(ps.Started)))
 	if ps.LastPoll.IsZero() {
 		sb.WriteString("Letzte Abfragerunde: noch keine\n")
@@ -378,7 +398,7 @@ func (b *Bot) showGraceMenu(ctx context.Context, chatID, msgID int64, note strin
 		}
 	}
 	k.InlineKeyboard = append(k.InlineKeyboard, row(btn("✏️ Anderer Wert", "gri"), btn("⬅️ Hauptmenü", "m")))
-	text := fmt.Sprintf("⏳ <b>Kulanzzeit</b>: %s\n\nFährt ein Auto innerhalb dieser Zeit nach der Einfahrt wieder aus, gilt der Parkvorgang als kostenlos. "+
+	text := fmt.Sprintf("⏳ <b>Karenzzeit</b>: %s\n\nFährt ein Auto innerhalb dieser Zeit nach der Einfahrt wieder aus, gilt der Parkvorgang als kostenlos (AGB von fair parken, Ziffer 3.2: 15 min). "+
 		"Verschwindet ein Vorgang erst später, geht der Bot davon aus, dass vor der Ausfahrt bezahlt wurde. Gilt für alle Parkplätze und Nutzer.",
 		fmtDuration(b.grace(ctx)))
 	if note != "" {

@@ -55,17 +55,17 @@ type User struct {
 
 // Session is a parking session seen by the monitor.
 type Session struct {
-	Plate        string
-	Key          string
-	Item         string // JSON of the parking item
-	FirstSeen    time.Time
-	LastSeen     time.Time
-	Closed       bool
-	ReminderSent bool
-	ExitedAt     time.Time // zero while the car is (or was last seen) parked
-	Outcome      string    // set when closed
-	Missing      int       // consecutive checks in which the API didn't return it
-	MissingSince time.Time // first of these checks
+	Plate         string
+	Key           string
+	Item          string // JSON of the parking item
+	FirstSeen     time.Time
+	LastSeen      time.Time
+	Closed        bool
+	RemindersSent int       // payment reminders sent so far
+	ExitedAt      time.Time // zero while the car is (or was last seen) parked
+	Outcome       string    // set when closed
+	Missing       int       // consecutive checks in which the API didn't return it
+	MissingSince  time.Time // first of these checks
 }
 
 // Session outcomes.
@@ -105,6 +105,24 @@ CREATE TABLE IF NOT EXISTS chat_settings (
 	chat_id    INTEGER PRIMARY KEY,
 	quiet_from INTEGER NOT NULL DEFAULT 0,
 	quiet_to   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS feedback (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id    INTEGER NOT NULL,
+	username   TEXT    NOT NULL DEFAULT '',
+	name       TEXT    NOT NULL DEFAULT '',
+	text       TEXT    NOT NULL,
+	status     TEXT    NOT NULL DEFAULT 'new',
+	reply      TEXT    NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage (
+	day     TEXT    NOT NULL, -- YYYY-MM-DD, local time
+	user_id INTEGER NOT NULL,
+	feature TEXT    NOT NULL,
+	count   INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (day, user_id, feature)
 );
 CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
@@ -400,7 +418,7 @@ const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed
 func scanSession(rows *sql.Rows) (Session, error) {
 	var x Session
 	var first, last, exited, missingSince int64
-	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome, &x.Missing, &missingSince)
+	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.RemindersSent, &exited, &x.Outcome, &x.Missing, &missingSince)
 	if missingSince > 0 {
 		x.MissingSince = time.Unix(missingSince, 0)
 	}
@@ -422,8 +440,9 @@ func (s *Store) MarkExited(ctx context.Context, plate, key string, t time.Time) 
 	return err
 }
 
-func (s *Store) MarkReminderSent(ctx context.Context, plate, key string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET reminder_sent = 1 WHERE plate = ? AND key = ?`, plate, key)
+// SetRemindersSent stores how many payment reminders were sent for a session.
+func (s *Store) SetRemindersSent(ctx context.Context, plate, key string, n int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET reminder_sent = ? WHERE plate = ? AND key = ?`, n, plate, key)
 	return err
 }
 
@@ -608,4 +627,135 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		        (SELECT COUNT(*) FROM sessions WHERE closed = 0), (SELECT COUNT(*) FROM sessions WHERE first_seen >= ?)`,
 		time.Now().Add(-30*24*time.Hour).Unix()).Scan(&st.Chats, &st.Plates, &st.OpenSessions, &st.Sessions30d)
 	return st, err
+}
+
+// Feedback states.
+const (
+	FeedbackNew      = "new"
+	FeedbackProgress = "progress"
+	FeedbackDone     = "done"
+	FeedbackRejected = "rejected"
+)
+
+type Feedback struct {
+	ID        int64
+	UserID    int64
+	Username  string
+	Name      string
+	Text      string
+	Status    string
+	Reply     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+func (s *Store) AddFeedback(ctx context.Context, userID int64, username, name, text string) (int64, error) {
+	now := time.Now().Unix()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO feedback (user_id, username, name, text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID, username, name, text, now, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+const feedbackCols = `id, user_id, username, name, text, status, reply, created_at, updated_at`
+
+func scanFeedback(sc interface{ Scan(...any) error }) (Feedback, error) {
+	var f Feedback
+	var created, updated int64
+	err := sc.Scan(&f.ID, &f.UserID, &f.Username, &f.Name, &f.Text, &f.Status, &f.Reply, &created, &updated)
+	f.CreatedAt, f.UpdatedAt = time.Unix(created, 0), time.Unix(updated, 0)
+	return f, err
+}
+
+func (s *Store) GetFeedback(ctx context.Context, id int64) (Feedback, error) {
+	f, err := scanFeedback(s.db.QueryRowContext(ctx, `SELECT `+feedbackCols+` FROM feedback WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+	return f, err
+}
+
+// ListFeedback returns feedback, newest first. userID 0 lists all users;
+// open limits the list to new and in-progress entries.
+func (s *Store) ListFeedback(ctx context.Context, userID int64, open bool, limit int) ([]Feedback, error) {
+	q := `SELECT ` + feedbackCols + ` FROM feedback WHERE (? = 0 OR user_id = ?)`
+	if open {
+		q += ` AND status IN ('new', 'progress')`
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY id DESC LIMIT ?`, userID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []Feedback
+	for rows.Next() {
+		f, err := scanFeedback(rows)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, f)
+	}
+	return res, rows.Err()
+}
+
+func (s *Store) CountOpenFeedback(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM feedback WHERE status IN ('new', 'progress')`).Scan(&n)
+	return n, err
+}
+
+func (s *Store) SetFeedbackStatus(ctx context.Context, id int64, status string) error {
+	return s.updateFeedback(ctx, `status = ?`, status, id)
+}
+
+func (s *Store) SetFeedbackReply(ctx context.Context, id int64, reply string) error {
+	return s.updateFeedback(ctx, `reply = ?`, reply, id)
+}
+
+func (s *Store) updateFeedback(ctx context.Context, set string, v any, id int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE feedback SET `+set+`, updated_at = ? WHERE id = ?`, v, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CountUsage adds one use of a feature by a user on a day.
+func (s *Store) CountUsage(ctx context.Context, day string, userID int64, feature string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage (day, user_id, feature, count) VALUES (?, ?, ?, 1)
+		 ON CONFLICT (day, user_id, feature) DO UPDATE SET count = count + 1`, day, userID, feature)
+	return err
+}
+
+// UsageRow is the use of one feature by one user on one day.
+type UsageRow struct {
+	Day     string
+	UserID  int64
+	Feature string
+	Count   int
+}
+
+// UsageSince returns all usage rows since a day (inclusive).
+func (s *Store) UsageSince(ctx context.Context, sinceDay string) ([]UsageRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT day, user_id, feature, count FROM usage WHERE day >= ?`, sinceDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []UsageRow
+	for rows.Next() {
+		var u UsageRow
+		if err := rows.Scan(&u.Day, &u.UserID, &u.Feature, &u.Count); err != nil {
+			return nil, err
+		}
+		res = append(res, u)
+	}
+	return res, rows.Err()
 }

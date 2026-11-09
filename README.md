@@ -35,7 +35,8 @@ Für alles gibt es auch Befehle:
 | `/dauer [Kennzeichen] 3` | Meldung nach 3 h Parkdauer (`1,5`, `90m`, `aus`) |
 | `/ruhezeit 22-7` | Meldungen in der Zeit ohne Ton (`aus`) |
 | `/remove [Kennzeichen]` | Kennzeichen entfernen |
-| `/users`, `/allow ID`, `/block ID`, `/stats`, `/rundnachricht Text`, `/kulanz 15` | nur Admins, siehe [Zugang](#zugang) |
+| `/feedback [Text]` | Feedback schicken |
+| `/users`, `/allow ID`, `/block ID`, `/stats`, `/nutzung 30`, `/rundnachricht Text`, `/karenz 15` | nur Admins, siehe [Zugang](#zugang) |
 
 Der Verlauf zeigt nur Parkvorgänge, die der Bot gesehen hat, nachdem der Nutzer das Kennzeichen hinzugefügt hat. Als Gebühr gilt der zuletzt gesehene Betrag.
 Pausierte Kennzeichen werden nicht abgefragt, solange niemand sonst sie aktiv überwacht.
@@ -49,6 +50,14 @@ docker compose logs -f
 ```
 
 Die SQLite-Datenbank liegt im Volume `data`. Konfiguration siehe `.env.example`.
+
+## Feedback
+
+Nutzer schreiben über „💬 Feedback“ (oder `/feedback Text`) und sehen unter „Mein Feedback“ Status und Antworten. Admins bekommen jedes neue Feedback mit Buttons für den Status (🆕 neu, 🔧 in Arbeit, ✅ erledigt, 🚫 abgelehnt) und „💬 Antworten“; der Nutzer wird bei jeder Änderung benachrichtigt. Übersicht im Hauptmenü unter „📥 Feedback (n)“. Gespeichert in der Tabelle `feedback`.
+
+## Nutzungsstatistik
+
+Jede Interaktion (Befehl, Button, Eingabe) und jede verschickte Push-Nachricht wird pro Tag, Nutzer und Funktion gezählt (Tabelle `usage`, nur Zähler, keine Inhalte). Admins sehen unter „📈 Nutzung“ bzw. `/nutzung 30` aktive Nutzer (7/30 Tage) sowie Interaktionen und Nutzer je Funktion für 7, 30 oder 90 Tage; Befehle, Buttons und Eingaben derselben Funktion werden zusammengefasst, Admin-Funktionen ausgenommen.
 
 ## Zugang
 
@@ -105,14 +114,16 @@ Daraus leitet der Bot ab (Schwelle 3 min zwischen Abfragezeit und `realUTC_OUT`)
 |---|---|---|
 | Vorgang da, `realUTC_OUT` ≈ jetzt | parkt | „Neuer Parkvorgang“ mit „Bei Zahlung jetzt“ |
 | Vorgang da, `realUTC_OUT` steht | ausgefahren, Gebühr offen | „Ausfahrt erkannt“ mit offenem Betrag und Frist |
-| verschwindet, während er noch „parkt“, Parkdauer ≤ Kulanzzeit | kostenlos ausgefahren | „kostenlos“ |
-| verschwindet, während er noch „parkt“, Parkdauer > Kulanzzeit | vor der Ausfahrt bezahlt (Automat/online) | „vermutlich vor der Ausfahrt bezahlt“, zählt mit zuletzt angezeigtem Preis in die Kosten |
-| verschwindet, Kulanzzeit liegt in der Spanne der möglichen Parkdauer | nicht entscheidbar | „kostenlos oder vor der Ausfahrt bezahlt“ |
+| verschwindet, während er noch „parkt“, Parkdauer ≤ Karenzzeit | kostenlos ausgefahren | „kostenlos“ |
+| verschwindet, während er noch „parkt“, Parkdauer > Karenzzeit | vor der Ausfahrt bezahlt (Automat/online) | „vermutlich vor der Ausfahrt bezahlt“, zählt mit zuletzt angezeigtem Preis in die Kosten |
+| verschwindet, Karenzzeit liegt in der Spanne der möglichen Parkdauer | nicht entscheidbar | „kostenlos oder vor der Ausfahrt bezahlt“ |
 | verschwindet nach „Ausfahrt erkannt“ | bezahlt | „ist bezahlt“ |
 
 Die Ausfahrt liegt zwischen der letzten Abfrage, die das Auto noch parkend gesehen hat, und der ersten ohne Vorgang; die Parkdauer ist daher nur als Spanne bekannt.
 
-**Kulanzzeit:** Admin-Einstellung im Hauptmenü („⏳ Kulanzzeit“) oder `/kulanz 15`, Standard aus `GRACE_PERIOD` (15 min). Sie gilt für alle Parkplätze; parkplatzspezifische Freiparkzeiten (z. B. länger mit Kassenbon) kennt der Bot nicht.
+**AGB von fair parken** (in der Web-App unter `pay.fairparken.com/assets/agb/de.json`, Ziffer 3): Ausfahrt innerhalb von 15 min nach der Einfahrt ist kein Parkvorgang und kostenlos; nach einer Zahlung hat man 15 min zum Ausfahren; das Entgelt ist eigentlich vor der Ausfahrt am Automaten zu zahlen, ergänzend online bis 48 h nach der Ausfahrt. Danach folgen Halterabfrage und Zahlungsaufforderung mit Vertragsstrafe (Höhe laut Schild, zahlbar in 14 Tagen). Die AGB verweisen für die Nutzungsbedingungen auf die Schilder vor Ort; einzelne Parkplätze können abweichen. Der Bot erinnert standardmäßig 12 h und 2 h vor Ablauf der 48 h (`REMIND_BEFORE`).
+
+**Karenzzeit:** Admin-Einstellung im Hauptmenü („⏳ Karenzzeit“) oder `/karenz 15`, Standard aus `GRACE_PERIOD` (15 min). Sie gilt für alle Parkplätze; parkplatzspezifische Freiparkzeiten (z. B. länger mit Kassenbon) kennt der Bot nicht.
 
 Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
 
@@ -120,6 +131,6 @@ Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
 - „ohne Gebühr“/„bezahlt“ erst, wenn der Vorgang bei zwei Abfragen hintereinander fehlt (ca. 3–7 min nach der Ausfahrt).
 - Taucht ein als beendet gemeldeter Vorgang wieder auf, kommt eine Korrektur („doch noch offen“), und er wird weiter überwacht.
 
-Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API selbst nicht unterscheidbar, nur über die Kulanzzeit. Bisher beobachtet ist nur die kostenlose Ausfahrt; dass ein Vorgang mit Gebühr nach der Ausfahrt bis zur Zahlung (max. 48 h) in der Suche bleibt, folgt aus der Nachzahl-Möglichkeit der Website, ist aber noch nicht live gesehen.
+Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API selbst nicht unterscheidbar, nur über die Karenzzeit. Bisher beobachtet ist nur die kostenlose Ausfahrt; dass ein Vorgang mit Gebühr nach der Ausfahrt bis zur Zahlung (max. 48 h) in der Suche bleibt, folgt aus der Nachzahl-Möglichkeit der Website, ist aber noch nicht live gesehen.
 
 Abfrage-Last: ein Request pro überwachtem Kennzeichen alle `POLL_INTERVAL` (Standard 3 min, mit Jitter), dazwischen `REQUEST_GAP`.

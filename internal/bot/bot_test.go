@@ -281,7 +281,7 @@ func TestTariffs(t *testing.T) {
 func TestReminder(t *testing.T) {
 	ctx := context.Background()
 	b, tg, api := setup(t)
-	b.cfg.RemindBefore = 12 * time.Hour
+	b.cfg.RemindBefore = []time.Duration{12 * time.Hour, 2 * time.Hour}
 	b.handleText(ctx, 1, "/add HHKF860E")
 	out := time.Now().UTC().Add(-40 * time.Hour)
 	s := session(out.Add(-time.Hour).Format("2006-01-02 15:04:05"))
@@ -291,12 +291,22 @@ func TestReminder(t *testing.T) {
 	tg.take()
 	b.pollAll(ctx)
 	m := tg.take()
-	if len(m) != 1 || !strings.Contains(m[0].text, "Noch nicht bezahlt") {
+	if len(m) != 1 || !strings.Contains(m[0].text, "Noch nicht bezahlt") || !strings.Contains(m[0].text, "Vertragsstrafe") {
 		t.Fatalf("expected reminder, got %+v", m)
 	}
 	b.pollAll(ctx)
 	if m := tg.take(); len(m) != 0 {
-		t.Fatalf("reminder only once, got %+v", m)
+		t.Fatalf("reminder only once per step, got %+v", m)
+	}
+	// 2 h before the deadline the second reminder follows.
+	b.clock = func() time.Time { return time.Now().Add(7 * time.Hour) }
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "Noch nicht bezahlt") {
+		t.Fatalf("expected second reminder, got %+v", m)
+	}
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("got %+v", m)
 	}
 }
 

@@ -368,7 +368,7 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 			fmt.Fprintf(&sb, " (davon %d kostenlos)", m.free)
 		}
 	}
-	fmt.Fprintf(&sb, "\n\n<i>Kostenlos = innerhalb der Kulanzzeit (%s) ausgefahren. Gebühr = zuletzt vom Bot gesehener Betrag.</i>", fmtDuration(b.grace(ctx)))
+	fmt.Fprintf(&sb, "\n\n<i>Kostenlos = innerhalb der Karenzzeit (%s) ausgefahren. Gebühr = zuletzt vom Bot gesehener Betrag.</i>", fmtDuration(b.grace(ctx)))
 	b.reply(ctx, chatID, sb.String(), nil)
 }
 
