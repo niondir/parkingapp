@@ -18,9 +18,9 @@ import (
 
 type Config struct {
 	PollInterval time.Duration
-	RequestGap   time.Duration // pause between two API requests while polling
-	RemindBefore time.Duration // reminder before the online payment window closes, 0 = off
-	MaxPlates    int           // per chat
+	RequestGap   time.Duration   // pause between two API requests while polling
+	RemindBefore []time.Duration // reminders before the online payment window closes, descending; empty = off
+	MaxPlates    int             // per chat
 	// After a downtime longer than this, users are informed and pending commands are dropped. 0 = off.
 	OfflineNotice  time.Duration
 	GracePeriod    time.Duration  // default for the admin setting: leaving within this time is free
@@ -55,10 +55,14 @@ type Bot struct {
 	pend   map[int64]*pending // open questions per chat
 
 	clock func() time.Time // time.Now, replaced in tests
+
+	usersMu sync.Mutex
+	users   map[int64]telegram.User // last known name per user, for feedback
 }
 
 func New(cfg Config, tg messenger, fp *fairparken.Client, st *store.Store) *Bot {
-	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}, clock: time.Now}
+	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}, clock: time.Now,
+		users: map[int64]telegram.User{}}
 }
 
 var commands = []telegram.BotCommand{
@@ -73,6 +77,7 @@ var commands = []telegram.BotCommand{
 	{Command: "einstellungen", Description: "Benachrichtigungen und Alarme"},
 	{Command: "rabatt", Description: "Preis mit Rabattcode: /rabatt CODE"},
 	{Command: "kassenzettel", Description: "Vertragsstrafe mit Kassenzettel anfechten"},
+	{Command: "feedback", Description: "Feedback, Fehler oder Ideen schicken"},
 	{Command: "help", Description: "Hilfe"},
 }
 
@@ -137,6 +142,8 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 		if !b.checkAccess(ctx, m.Chat.ID, *m.From) {
 			return
 		}
+		b.remember(*m.From)
+		b.track(ctx, m.From.ID, b.textFeature(m.Chat.ID, text))
 		if b.isAdmin(m.From.ID) && b.handleAdminText(ctx, m.Chat.ID, m.From.ID, text) {
 			return
 		}
@@ -148,6 +155,9 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 			return
 		}
 		_ = b.tg.AnswerCallback(ctx, q.ID, "")
+		b.remember(q.From)
+		kind, _, _ := strings.Cut(q.Data, ":")
+		b.track(ctx, q.From.ID, "btn:"+kind)
 		if b.isAdmin(q.From.ID) && b.handleAdminCallback(ctx, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, q.Data) {
 			return
 		}
@@ -227,6 +237,12 @@ func (b *Bot) handleText(ctx context.Context, chatID int64, text string) {
 		b.cmdVoucher(ctx, chatID, args)
 	case "/kassenzettel":
 		b.cmdReceipt(ctx, chatID)
+	case "/feedback":
+		if args == "" {
+			b.askFeedback(ctx, chatID)
+		} else {
+			b.saveFeedback(ctx, chatID, args)
+		}
 	default:
 		b.reply(ctx, chatID, "Unbekannter Befehl. /help zeigt alle Befehle.", nil)
 	}
@@ -271,6 +287,7 @@ Ich prüfe alle paar Minuten, ob für deine Kennzeichen ein offener Parkvorgang 
 <b>Bedienung:</b> Alles geht über „`+menuButton+`“ unten im Chat. Unter <i>Meine Kennzeichen</i> → Kennzeichen antippen findest du Prüfen, Bezahlen, Tarife, Rabattcode, Verlauf und die Einstellungen (Pause, Preis- und Dauer-Alarm, Ruhezeit).
 
 Ein Kennzeichen einfach als Nachricht schicken prüft es sofort.
+Fehler oder Ideen? Unter „💬 Feedback“ – du siehst dort auch, was daraus geworden ist.
 Bezahlt wird auf der offiziellen Seite pay.fairparken.com – der Bot sieht keine Zahlungsdaten.
 
 <i>Für Tipp-Fans gibt es auch Befehle: /add, /check, /tarife, /verlauf, /alarm, /dauer, /ruhezeit, /rabatt, /kassenzettel.</i>`, kb(row(btn("🏠 Hauptmenü", "m"))))

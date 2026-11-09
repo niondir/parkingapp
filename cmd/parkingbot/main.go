@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,7 +37,7 @@ func run() error {
 	cfg := bot.Config{
 		PollInterval:   envDuration("POLL_INTERVAL", 3*time.Minute),
 		RequestGap:     envDuration("REQUEST_GAP", time.Second),
-		RemindBefore:   envDuration("REMIND_BEFORE", 12*time.Hour),
+		RemindBefore:   envDurations("REMIND_BEFORE", []time.Duration{12 * time.Hour, 2 * time.Hour}),
 		MaxPlates:      envInt("MAX_PLATES", 10),
 		OfflineNotice:  envDuration("OFFLINE_NOTICE_AFTER", 5*time.Minute),
 		HealthcheckURL: strings.TrimRight(os.Getenv("HEALTHCHECK_URL"), "/"),
@@ -92,6 +93,29 @@ func envDuration(key string, def time.Duration) time.Duration {
 		slog.Warn("invalid duration, using default", "key", key, "value", v)
 	}
 	return def
+}
+
+// envDurations parses a comma separated list like "12h,2h", sorted descending.
+// "0" or "off" turns reminders off.
+func envDurations(key string, def []time.Duration) []time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if v == "0" || v == "off" {
+		return nil
+	}
+	var res []time.Duration
+	for _, p := range strings.Split(v, ",") {
+		d, err := time.ParseDuration(strings.TrimSpace(p))
+		if err != nil || d <= 0 {
+			slog.Warn("invalid duration list, using default", "key", key, "value", v)
+			return def
+		}
+		res = append(res, d)
+	}
+	sort.Slice(res, func(i, j int) bool { return res[i] > res[j] })
+	return res
 }
 
 func envInt(key string, def int) int {

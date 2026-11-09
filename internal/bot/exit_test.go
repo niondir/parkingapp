@@ -36,7 +36,7 @@ func TestFreeExit(t *testing.T) {
 	if len(m) != 1 {
 		t.Fatalf("got %s", texts(m))
 	}
-	for _, want := range []string{"Teststr. 1, Hamburg (Kaufland)", "Parkt seit:", "Bei Zahlung jetzt: <b>3,00 €</b> (deckt bis", "Kostenlos, wenn du bis", "Kulanzzeit 15 min", "Rabattcode möglich"} {
+	for _, want := range []string{"Teststr. 1, Hamburg (Kaufland)", "Parkt seit:", "Bei Zahlung jetzt: <b>3,00 €</b> (deckt bis", "Kostenlos, wenn du bis", "Karenzzeit 15 min", "Rabattcode möglich"} {
 		if !strings.Contains(m[0].text, want) {
 			t.Errorf("missing %q in %s", want, m[0].text)
 		}
@@ -268,7 +268,7 @@ func TestGraceAdmin(t *testing.T) {
 		t.Fatalf("admin menu: %v", buttons(m[0]))
 	}
 	b.handle(ctx, click(100, "gr"))
-	if m := tg.take(); !strings.Contains(m[0].text, "Kulanzzeit</b>: 15 min") || !has(buttons(m[0]), "grv:30") {
+	if m := tg.take(); !strings.Contains(m[0].text, "Karenzzeit</b>: 15 min") || !has(buttons(m[0]), "grv:30") {
 		t.Fatalf("got %s %v", m[0].text, buttons(m[0]))
 	}
 	b.handle(ctx, click(100, "grv:30"))
@@ -281,17 +281,17 @@ func TestGraceAdmin(t *testing.T) {
 	b.handle(ctx, msg(100, "abc"))
 	tg.take()
 	b.handle(ctx, msg(100, "20 min"))
-	if m := tg.take(); !strings.Contains(texts(m), "Kulanzzeit</b>: 20 min") {
+	if m := tg.take(); !strings.Contains(texts(m), "Karenzzeit</b>: 20 min") {
 		t.Fatalf("got %s", texts(m))
 	}
-	b.handle(ctx, msg(100, "/kulanz 0"))
+	b.handle(ctx, msg(100, "/karenz 0"))
 	tg.take()
 	if g := b.grace(ctx); g != 0 {
 		t.Fatalf("grace %v", g)
 	}
 
 	// Only admins.
-	b.handle(ctx, msg(1, "/kulanz 99"))
+	b.handle(ctx, msg(1, "/karenz 99"))
 	b.handle(ctx, click(1, "grv:99"))
 	if g := b.grace(ctx); g != 0 {
 		t.Fatalf("non-admin changed grace to %v", g)

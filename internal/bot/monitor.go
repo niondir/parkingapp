@@ -139,13 +139,13 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		switch {
 		case created:
 			slog.Info("new session", "plate", plate, "key", key)
-			b.notify(ctx, plate, skipChat, nil, func(p store.Plate) string {
+			b.notify(ctx, "push:new", plate, skipChat, nil, func(p store.Plate) string {
 				return "🅿️ <b>Neuer Parkvorgang erkannt</b>\n\n" + fmtResult(r, p.Label, now, grace)
 			}, true)
 		case reopened:
 			// It was reported as finished, but the API returns it again.
 			slog.Warn("session reappeared", "plate", plate, "key", key)
-			b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
+			b.notify(ctx, "push:reopened", plate, 0, nil, func(p store.Plate) string {
 				return "⚠️ <b>Korrektur:</b> Der Parkvorgang ist doch noch offen.\n\n" + fmtResult(r, p.Label, now, grace)
 			}, true)
 		}
@@ -166,7 +166,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 			}
 			slog.Info("exit", "plate", plate, "key", key, "price", it.Price)
 			if it.Price != nil && *it.Price > 0 {
-				b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
+				b.notify(ctx, "push:exit", plate, 0, nil, func(p store.Plate) string {
 					return "🚙 <b>Ausfahrt erkannt</b> – es ist noch eine Gebühr offen.\n\n" + fmtResult(r, p.Label, now, grace)
 				}, true)
 			}
@@ -202,7 +202,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 			return err
 		}
 		slog.Info("session gone", "plate", plate, "key", s.Key, "outcome", outcome)
-		b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
+		b.notify(ctx, "push:closed", plate, 0, nil, func(p store.Plate) string {
 			return fmtClosed(it, p.Label, ci)
 		}, false)
 	}
@@ -299,14 +299,14 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 	newDur := parkedFor(it, now)
 	isNew := lastCheck.IsZero()
 
-	b.notify(ctx, plate, 0, func(p store.Plate) bool {
+	b.notify(ctx, "push:price-alarm", plate, 0, func(p store.Plate) bool {
 		return p.PriceLimit > 0 && it.Price != nil && oldPrice < p.PriceLimit && newPrice >= p.PriceLimit
 	}, func(p store.Plate) string {
 		return fmt.Sprintf("💸 <b>Preisalarm</b>: Die Gebühr hat %s erreicht.\n\n%s", fmtEuro(p.PriceLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
 	}, true)
 
 	if !isNew && it.Price != nil && old.Price != nil && newPrice > oldPrice {
-		b.notify(ctx, plate, 0, func(p store.Plate) bool {
+		b.notify(ctx, "push:price-change", plate, 0, func(p store.Plate) bool {
 			// The price alert above already covers the step over the limit.
 			return p.PriceChange && !(p.PriceLimit > 0 && oldPrice < p.PriceLimit && newPrice >= p.PriceLimit)
 		}, func(p store.Plate) string {
@@ -314,35 +314,45 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 		}, true)
 	}
 
-	b.notify(ctx, plate, 0, func(p store.Plate) bool {
+	b.notify(ctx, "push:duration-alarm", plate, 0, func(p store.Plate) bool {
 		return p.DurationLimit > 0 && oldDur < p.DurationLimit && newDur >= p.DurationLimit
 	}, func(p store.Plate) string {
 		return fmt.Sprintf("⏱ <b>Parkdauer-Alarm</b>: %s parkt seit über %s.\n\n%s", plateTitle(plate, p.Label), fmtDuration(p.DurationLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
 	}, true)
 }
 
-// maybeRemind warns once if a session is still unpaid shortly before the
-// online payment window closes. The exit time only stays constant once the
-// car has left, so a running session never triggers this.
+// maybeRemind warns when a session is still unpaid shortly before the online
+// payment window (48 h after leaving) closes, once per entry of
+// cfg.RemindBefore. Only sessions with a confirmed exit are affected.
 func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.ParkingItem, open []store.Session) {
-	out, ok := it.Out()
-	if !ok || b.cfg.RemindBefore <= 0 {
-		return
-	}
 	for _, s := range open {
-		if s.Key != key || s.ReminderSent {
+		if s.Key != key || s.ExitedAt.IsZero() {
 			continue
 		}
-		left := time.Until(out.Add(PayWindow))
-		if left > b.cfg.RemindBefore || left < 0 {
+		left := s.ExitedAt.Add(PayWindow).Sub(b.clock())
+		if left < 0 {
 			return
 		}
-		if err := b.store.MarkReminderSent(ctx, plate, key); err != nil {
+		// Count the reminders that are due; with a long downtime several may
+		// be due at once, then only the last one is sent.
+		due := 0
+		for _, d := range b.cfg.RemindBefore {
+			if left <= d {
+				due++
+			}
+		}
+		if due <= s.RemindersSent {
+			return
+		}
+		if err := b.store.SetRemindersSent(ctx, plate, key, due); err != nil {
 			slog.Error("mark reminder", "err", err)
 			return
 		}
-		b.notify(ctx, plate, 0, func(p store.Plate) bool { return p.Remind }, func(p store.Plate) string {
-			return fmt.Sprintf("⚠️ <b>Noch nicht bezahlt</b> – nur noch ca. %s Zeit.\n\n%s", fmtDuration(left), fmtItem(it, p.Label, time.Now(), b.grace(ctx)))
+		deadline := s.ExitedAt.Add(PayWindow)
+		b.notify(ctx, "push:reminder", plate, 0, func(p store.Plate) bool { return p.Remind }, func(p store.Plate) string {
+			return fmt.Sprintf("⚠️ <b>Noch nicht bezahlt</b> – nur noch ca. %s bis %s.\n"+
+				"Danach fragt fair parken den Halter ab und schickt eine Zahlungsaufforderung mit Vertragsstrafe (Höhe laut Schild am Parkplatz).\n\n%s",
+				fmtDuration(left), fmtTime(deadline), fmtItem(it, p.Label, time.Now(), b.grace(ctx)))
 		}, true)
 		return
 	}
@@ -350,7 +360,7 @@ func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.
 
 // notify pushes a message to every subscriber of a plate that hasn't paused
 // it and passes filter (nil = all). During quiet hours pushes are silent.
-func (b *Bot) notify(ctx context.Context, plate string, skipChat int64, filter func(store.Plate) bool,
+func (b *Bot) notify(ctx context.Context, kind, plate string, skipChat int64, filter func(store.Plate) bool,
 	text func(store.Plate) string, withButtons bool) {
 	subs, err := b.store.Subscribers(ctx, plate)
 	if err != nil {
@@ -370,7 +380,9 @@ func (b *Bot) notify(ctx context.Context, plate string, skipChat int64, filter f
 		}
 		if err != nil {
 			slog.Warn("send push", "chat", s.ChatID, "plate", plate, "err", err)
+			continue
 		}
+		b.track(ctx, s.ChatID, kind)
 	}
 }
 
