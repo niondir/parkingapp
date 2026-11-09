@@ -147,8 +147,23 @@ func TestSettingsMenus(t *testing.T) {
 
 	press(b, 1, 30, "s:HHKF860E")
 	m := tg.take()
-	if m[0].edit != 30 || !has(buttons(m[0]), "pl:HHKF860E") || !has(buttons(m[0]), "p:HHKF860E") {
+	if m[0].edit != 30 || !has(buttons(m[0]), "al:HHKF860E") || !has(buttons(m[0]), "p:HHKF860E") {
 		t.Fatalf("settings: %+v", m)
+	}
+
+	// Alarms are reachable from the main menu and the plate menu.
+	press(b, 1, 30, "m")
+	if m := tg.take(); !has(buttons(m[0]), "al") {
+		t.Fatalf("main menu: %v", buttons(m[0]))
+	}
+	press(b, 1, 30, "p:HHKF860E")
+	if m := tg.take(); !has(buttons(m[0]), "al:HHKF860E") || !strings.Contains(m[0].text, "Preisalarm: aus") {
+		t.Fatalf("plate menu: %s %v", m[0].text, buttons(m[0]))
+	}
+	press(b, 1, 30, "al")
+	m = tg.take()
+	if !strings.Contains(m[0].text, "Alarme</b> für <b>HHKF860E</b>") || !has(buttons(m[0]), "pl:HHKF860E") || !has(buttons(m[0]), "dl:HHKF860E") {
+		t.Fatalf("alarm menu with one plate: %s %v", m[0].text, buttons(m[0]))
 	}
 
 	press(b, 1, 30, "pl:HHKF860E")
@@ -156,7 +171,7 @@ func TestSettingsMenus(t *testing.T) {
 		t.Fatalf("price menu: %v", buttons(m[0]))
 	}
 	press(b, 1, 30, "plv:HHKF860E:10")
-	if m := tg.take(); m[0].edit != 30 || !strings.Contains(m[0].text, "Preisalarm ab: 10,00 €") {
+	if m := tg.take(); m[0].edit != 30 || !strings.Contains(m[0].text, "Preisalarm: ab 10,00 €") {
 		t.Fatalf("got %s", texts(m))
 	}
 
@@ -165,17 +180,17 @@ func TestSettingsMenus(t *testing.T) {
 	b.handleText(ctx, 1, "abc")
 	tg.take()
 	b.handleText(ctx, 1, "12,50 €")
-	if m := tg.take(); !strings.Contains(texts(m), "Preisalarm ab: 12,50 €") {
+	if m := tg.take(); !strings.Contains(texts(m), "Preisalarm: ab 12,50 €") {
 		t.Fatalf("got %s", texts(m))
 	}
 
 	press(b, 1, 30, "dlv:HHKF860E:90")
-	if m := tg.take(); !strings.Contains(m[0].text, "Parkdauer-Alarm ab: 1 h 30 min") {
+	if m := tg.take(); !strings.Contains(m[0].text, "Dauer-Alarm: ab 1 h 30 min") {
 		t.Fatalf("got %s", texts(m))
 	}
 	press(b, 1, 30, "dli:HHKF860E")
 	b.handleText(ctx, 1, "2,5")
-	if m := tg.take(); !strings.Contains(texts(m), "Parkdauer-Alarm ab: 2 h 30 min") {
+	if m := tg.take(); !strings.Contains(texts(m), "Dauer-Alarm: ab 2 h 30 min") {
 		t.Fatalf("got %s", texts(m))
 	}
 
@@ -192,8 +207,21 @@ func TestSettingsMenus(t *testing.T) {
 		t.Fatalf("got %s", texts(m))
 	}
 
+	press(b, 1, 30, "alc:HHKF860E")
+	if m := tg.take(); !strings.Contains(m[0].text, "Jede Preiserhöhung melden: an") {
+		t.Fatalf("got %s", texts(m))
+	}
+
+	// With several plates the alarm entry asks which one.
+	b.handleText(ctx, 1, "/add B-XY 1")
+	tg.take()
+	press(b, 1, 30, "al")
+	if m := tg.take(); !has(buttons(m[0]), "al:HHKF860E") || !has(buttons(m[0]), "al:BXY1") {
+		t.Fatalf("chooser: %v", buttons(m[0]))
+	}
+
 	p, _ := b.store.GetPlate(ctx, 1, "HHKF860E")
-	if p.PriceLimit != 12.5 || p.DurationLimit != 150*time.Minute {
+	if p.PriceLimit != 12.5 || p.DurationLimit != 150*time.Minute || !p.PriceChange {
 		t.Fatalf("stored: %+v", p.PlateSettings)
 	}
 }
