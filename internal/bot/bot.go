@@ -52,10 +52,12 @@ type Bot struct {
 
 	pendMu sync.Mutex
 	pend   map[int64]*pending // open questions per chat
+
+	clock func() time.Time // time.Now, replaced in tests
 }
 
 func New(cfg Config, tg messenger, fp *fairparken.Client, st *store.Store) *Bot {
-	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}}
+	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}, clock: time.Now}
 }
 
 var commands = []telegram.BotCommand{

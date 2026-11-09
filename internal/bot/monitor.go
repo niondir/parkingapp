@@ -119,14 +119,14 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 	for _, s := range open {
 		prev[s.Key] = s
 	}
-	now := time.Now()
+	now := b.clock()
 	seen := map[string]bool{}
 	for _, r := range res {
 		it := r.AnprResult
 		key := it.Key()
 		seen[key] = true
 		raw, _ := json.Marshal(it.Raw)
-		created, err := b.store.UpsertSession(ctx, plate, key, string(raw))
+		created, reopened, err := b.store.UpsertSession(ctx, plate, key, string(raw))
 		if err != nil {
 			return err
 		}
@@ -135,20 +135,36 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 				return err
 			}
 		}
-		if created {
+		switch {
+		case created:
 			slog.Info("new session", "plate", plate, "key", key)
 			b.notify(ctx, plate, skipChat, nil, func(p store.Plate) string {
 				return "🅿️ <b>Neuer Parkvorgang erkannt</b>\n\n" + fmtResult(r, p.Label, now)
 			}, true)
+		case reopened:
+			// It was reported as finished, but the API returns it again.
+			slog.Warn("session reappeared", "plate", plate, "key", key)
+			b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
+				return "⚠️ <b>Korrektur:</b> Der Parkvorgang ist doch noch offen.\n\n" + fmtResult(r, p.Label, now)
+			}, true)
 		}
-		// A session that stays after the car has left has a fee due.
-		if s, ok := prev[key]; (created || (ok && s.ExitedAt.IsZero())) && !it.Parked(now) {
-			out, _ := it.Out()
-			if err := b.store.MarkExited(ctx, plate, key, out); err != nil {
+		s, had := prev[key]
+		var old fairparken.ParkingItem
+		if had {
+			_ = json.Unmarshal([]byte(s.Item), &old)
+		}
+		switch {
+		case (created || reopened) && !it.Parked(now):
+			// First seen after leaving; the message above already shows the open fee.
+			if err := b.markExited(ctx, plate, key, it); err != nil {
 				return err
 			}
-			if !created {
-				slog.Info("exit", "plate", plate, "key", key)
+		case had && s.ExitedAt.IsZero() && exitConfirmed(old, it, s.LastSeen, now):
+			if err := b.markExited(ctx, plate, key, it); err != nil {
+				return err
+			}
+			slog.Info("exit", "plate", plate, "key", key, "price", it.Price)
+			if it.Price != nil && *it.Price > 0 {
 				b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
 					return "🚙 <b>Ausfahrt erkannt</b> – es ist noch eine Gebühr offen.\n\n" + fmtResult(r, p.Label, now)
 				}, true)
@@ -156,10 +172,8 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		}
 		// Alerts compare the state of the last check with now. A new session
 		// counts from zero, so limits already exceeded are reported right away.
-		var old fairparken.ParkingItem
 		lastCheck := time.Time{}
-		if s, ok := prev[key]; ok {
-			_ = json.Unmarshal([]byte(s.Item), &old)
+		if had {
 			lastCheck = s.LastSeen
 		}
 		b.checkAlerts(ctx, plate, it, old, lastCheck, now)
@@ -171,23 +185,51 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		if seen[s.Key] {
 			continue
 		}
+		// One empty answer may be a hiccup or the backend processing the exit.
+		n, err := b.store.MarkMissing(ctx, plate, s.Key)
+		if err != nil {
+			return err
+		}
+		if n < missingToClose {
+			continue
+		}
+		var it fairparken.ParkingItem
+		_ = json.Unmarshal([]byte(s.Item), &it)
 		// Gone while still parked: the camera saw the car leave without a fee
 		// due. Gone after an exit with a fee due: it was paid.
 		outcome := store.OutcomeNoFee
-		if !s.ExitedAt.IsZero() {
+		if !s.ExitedAt.IsZero() && it.Price != nil && *it.Price > 0 {
 			outcome = store.OutcomePaid
 		}
 		if err := b.store.CloseSession(ctx, plate, s.Key, outcome); err != nil {
 			return err
 		}
 		slog.Info("session gone", "plate", plate, "key", s.Key, "outcome", outcome)
-		var it fairparken.ParkingItem
-		_ = json.Unmarshal([]byte(s.Item), &it)
 		b.notify(ctx, plate, 0, nil, func(p store.Plate) string {
 			return fmtClosed(it, p.Label, outcome, s.LastSeen)
 		}, false)
 	}
 	return nil
+}
+
+// missingToClose is the number of consecutive checks without a session
+// before it counts as finished.
+const missingToClose = 2
+
+// exitConfirmed reports whether the car has left: the exit time stayed the
+// same over two checks at least two minutes apart and is in the past. While
+// parked, the API moves it forward every minute.
+func exitConfirmed(old, cur fairparken.ParkingItem, lastCheck, now time.Time) bool {
+	return cur.RealUTCOut != "" && old.RealUTCOut == cur.RealUTCOut &&
+		now.Sub(lastCheck) >= 2*time.Minute && !cur.Parked(now)
+}
+
+func (b *Bot) markExited(ctx context.Context, plate, key string, it fairparken.ParkingItem) error {
+	out, ok := it.Out()
+	if !ok {
+		out = b.clock()
+	}
+	return b.store.MarkExited(ctx, plate, key, out)
 }
 
 // parkedFor is the parking duration at time t. Once the car has left, the

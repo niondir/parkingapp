@@ -64,6 +64,7 @@ type Session struct {
 	ReminderSent bool
 	ExitedAt     time.Time // zero while the car is (or was last seen) parked
 	Outcome      string    // set when closed
+	Missing      int       // consecutive checks in which the API didn't return it
 }
 
 // Session outcomes.
@@ -134,8 +135,12 @@ type column struct{ name, def string }
 
 // columns added after the first release
 var addedColumns = map[string][]column{
-	"plates":   plateColumns,
-	"sessions": {{"exited_at", "INTEGER NOT NULL DEFAULT 0"}, {"outcome", "TEXT NOT NULL DEFAULT ''"}},
+	"plates": plateColumns,
+	"sessions": {
+		{"exited_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"outcome", "TEXT NOT NULL DEFAULT ''"},
+		{"missing", "INTEGER NOT NULL DEFAULT 0"}, // consecutive checks without the session
+	},
 }
 
 var plateColumns = []column{
@@ -337,29 +342,43 @@ func (s *Store) OpenSessions(ctx context.Context, plate string) ([]Session, erro
 	return res, rows.Err()
 }
 
-// UpsertSession stores a session as seen now. created is true for a new session.
-func (s *Store) UpsertSession(ctx context.Context, plate, key, item string) (created bool, err error) {
+// UpsertSession stores a session as seen now. created is true for a new
+// session, reopened for one that was closed before.
+func (s *Store) UpsertSession(ctx context.Context, plate, key, item string) (created, reopened bool, err error) {
 	now := time.Now().Unix()
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (plate, key, item, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (plate, key) DO NOTHING`, plate, key, item, now, now)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		return true, nil
+		return true, false, nil
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT closed FROM sessions WHERE plate = ? AND key = ?`, plate, key).Scan(&reopened); err != nil {
+		return false, false, err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE sessions SET item = ?, last_seen = ?, closed = 0 WHERE plate = ? AND key = ?`, item, now, plate, key)
-	return false, err
+		`UPDATE sessions SET item = ?, last_seen = ?, closed = 0, missing = 0,
+		 outcome = CASE WHEN closed = 1 THEN '' ELSE outcome END
+		 WHERE plate = ? AND key = ?`, item, now, plate, key)
+	return false, reopened, err
 }
 
-const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent, s.exited_at, s.outcome`
+// MarkMissing counts a check in which the session was not returned.
+func (s *Store) MarkMissing(ctx context.Context, plate, key string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE sessions SET missing = missing + 1 WHERE plate = ? AND key = ? RETURNING missing`, plate, key).Scan(&n)
+	return n, err
+}
+
+const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent, s.exited_at, s.outcome, s.missing`
 
 func scanSession(rows *sql.Rows) (Session, error) {
 	var x Session
 	var first, last, exited int64
-	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome)
+	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome, &x.Missing)
 	x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
 	if exited > 0 {
 		x.ExitedAt = time.Unix(exited, 0)

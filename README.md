@@ -108,6 +108,12 @@ Daraus leitet der Bot ab (Schwelle 3 min zwischen Abfragezeit und `realUTC_OUT`)
 | verschwindet, während er noch „parkt“ | ausgefahren ohne offene Gebühr (Freiparkzeit oder vorher bezahlt) | „ohne Gebühr“ |
 | verschwindet nach „Ausfahrt erkannt“ | bezahlt | „ist bezahlt“ |
 
-Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API nicht unterscheidbar.
+Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
+
+- „Ausfahrt erkannt“ erst, wenn `realUTC_OUT` bei zwei Abfragen im Abstand von mindestens 2 min gleich geblieben ist, und nur bei `price` > 0.
+- „ohne Gebühr“/„bezahlt“ erst, wenn der Vorgang bei zwei Abfragen hintereinander fehlt (ca. 3–7 min nach der Ausfahrt).
+- Taucht ein als beendet gemeldeter Vorgang wieder auf, kommt eine Korrektur („doch noch offen“), und er wird weiter überwacht.
+
+Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API nicht unterscheidbar. Bisher beobachtet ist nur die kostenlose Ausfahrt; dass ein Vorgang mit Gebühr nach der Ausfahrt bis zur Zahlung (max. 48 h) in der Suche bleibt, folgt aus der Nachzahl-Möglichkeit der Website, ist aber noch nicht live gesehen.
 
 Abfrage-Last: ein Request pro überwachtem Kennzeichen alle `POLL_INTERVAL` (Standard 3 min, mit Jitter), dazwischen `REQUEST_GAP`.
