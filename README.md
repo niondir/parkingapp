@@ -10,7 +10,7 @@ Telegram-Bot für Parkplätze von [fair parken](https://www.fairparken.com/de-DE
 
 ## Bedienung
 
-Alles geht über Buttons: `/start` blendet unten im Chat dauerhaft „🏠 Menü“ ein. Das Hauptmenü führt zu *Meine Kennzeichen* → Kennzeichen → Prüfen, Bezahlen, Tarife, Rabattcode, Verlauf, Einstellungen, Umbenennen, Entfernen (mit Rückfrage). Menüs werden an Ort und Stelle umgebaut.
+Alles geht über Buttons: `/start` blendet unten im Chat dauerhaft „🏠 Menü“ ein. Das Hauptmenü führt zu *Meine Kennzeichen* → Kennzeichen → Prüfen, Bezahlen, Alarme, Tarife, Rabattcode, Verlauf, Einstellungen, Umbenennen, Entfernen (mit Rückfrage). Preis- und Dauer-Alarm erreicht man direkt über „🔔 Alarme“ im Hauptmenü oder im Kennzeichen-Menü. Menüs werden an Ort und Stelle umgebaut.
 
 Braucht der Bot eine Eingabe (Kennzeichen, Name, Rabattcode, eigener Betrag), fragt er mit einem „✖️ Abbrechen“-Button und nimmt die nächste Nachricht als Antwort. Ungültige Eingaben fragt er erneut ab. Menü-Button oder ein Befehl brechen die Frage ab, nach 15 min verfällt sie. Alarme und Ruhezeit haben Schnellauswahl-Buttons.
 

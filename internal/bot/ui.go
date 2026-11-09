@@ -250,8 +250,9 @@ func (b *Bot) showMain(ctx context.Context, chatID, msgID int64) {
 	}
 	k := kb(
 		row(btn("🚗 Meine Kennzeichen", "ml"), btn("➕ Hinzufügen", "add")),
-		row(btn("🔄 Jetzt prüfen", "chk"), btn("📒 Verlauf", "hist")),
-		row(btn("🧾 Kassenzettel", "rc"), btn("❓ Hilfe", "help")),
+		row(btn("🔄 Jetzt prüfen", "chk"), btn("🔔 Alarme", "al")),
+		row(btn("📒 Verlauf", "hist"), btn("🧾 Kassenzettel", "rc")),
+		row(btn("❓ Hilfe", "help")),
 	)
 	if b.isAdmin(chatID) {
 		k.InlineKeyboard = append(k.InlineKeyboard,
@@ -289,21 +290,69 @@ func (b *Bot) showPlates(ctx context.Context, chatID, msgID int64) {
 	b.show(ctx, chatID, msgID, text, k)
 }
 
-func plateSummary(p store.Plate) string {
-	parts := []string{"aktiv"}
-	if p.Paused {
-		parts[0] = "⏸ pausiert"
-	}
+func fmtPriceLimit(p store.Plate) string {
 	if p.PriceLimit > 0 {
-		parts = append(parts, "Preisalarm "+fmtEuro(p.PriceLimit))
+		return "ab " + fmtEuro(p.PriceLimit)
 	}
+	return "aus"
+}
+
+func fmtDurationLimit(p store.Plate) string {
 	if p.DurationLimit > 0 {
-		parts = append(parts, "Dauer-Alarm "+fmtDuration(p.DurationLimit))
+		return "ab " + fmtDuration(p.DurationLimit)
 	}
-	if p.PriceChange {
-		parts = append(parts, "Preiserhöhungen")
+	return "aus"
+}
+
+func plateSummary(p store.Plate) string {
+	status := "▶️ aktiv"
+	if p.Paused {
+		status = "⏸ pausiert"
 	}
-	return strings.Join(parts, " · ")
+	return status + "\n💸 Preisalarm: " + fmtPriceLimit(p) + "\n⏱ Dauer-Alarm: " + fmtDurationLimit(p)
+}
+
+// showAlarms shows the alarms of a plate. Without plate it asks which one.
+func (b *Bot) showAlarms(ctx context.Context, chatID, msgID int64, plate string) {
+	if plate == "" {
+		plates, err := b.store.Plates(ctx, chatID)
+		if err != nil {
+			b.fail(ctx, chatID, "Laden", err)
+			return
+		}
+		switch len(plates) {
+		case 0:
+			b.show(ctx, chatID, msgID, "🔔 Noch keine Kennzeichen – erst eins hinzufügen.",
+				kb(row(btn("➕ Hinzufügen", "add"), btn("⬅️ Hauptmenü", "m"))))
+			return
+		case 1:
+			plate = plates[0].Plate
+		default:
+			k := kb()
+			var sb strings.Builder
+			sb.WriteString("🔔 <b>Alarme</b> – für welches Kennzeichen?\n")
+			for _, p := range plates {
+				fmt.Fprintf(&sb, "\n%s: Preis %s, Dauer %s", plateTitle(p.Plate, p.Label), fmtPriceLimit(p), fmtDurationLimit(p))
+				k.InlineKeyboard = append(k.InlineKeyboard, row(btn(plateButtonText(p), "al:"+p.Plate)))
+			}
+			k.InlineKeyboard = append(k.InlineKeyboard, row(btn("⬅️ Hauptmenü", "m")))
+			b.show(ctx, chatID, msgID, sb.String(), k)
+			return
+		}
+	}
+	p, err := b.store.GetPlate(ctx, chatID, plate)
+	if err != nil {
+		b.showPlate(ctx, chatID, msgID, plate)
+		return
+	}
+	text := fmt.Sprintf("🔔 <b>Alarme</b> für %s\n\n💸 Preisalarm: %s\n⏱ Dauer-Alarm: %s\n📈 Jede Preiserhöhung melden: %s\n🔔 Erinnerung vor Ablauf der Zahlungsfrist: %s",
+		plateTitle(p.Plate, p.Label), fmtPriceLimit(p), fmtDurationLimit(p), onOff(p.PriceChange), onOff(p.Remind))
+	b.show(ctx, chatID, msgID, text, kb(
+		row(btn("💸 Preisalarm", "pl:"+p.Plate), btn("⏱ Dauer-Alarm", "dl:"+p.Plate)),
+		row(btn("📈 Preiserhöhungen "+onOff(!p.PriceChange)+"schalten", "alc:"+p.Plate)),
+		row(btn("🔔 Frist-Erinnerung "+onOff(!p.Remind)+"schalten", "alr:"+p.Plate)),
+		row(btn("⬅️ Zum Kennzeichen", "p:"+p.Plate)),
+	))
 }
 
 func (b *Bot) showPlate(ctx context.Context, chatID, msgID int64, plate string) {
@@ -319,6 +368,7 @@ func (b *Bot) showPlate(ctx context.Context, chatID, msgID int64, plate string) 
 	text := "🚗 " + plateTitle(p.Plate, p.Label) + "\n" + plateSummary(p)
 	b.show(ctx, chatID, msgID, text, kb(
 		row(btn("🔄 Prüfen", "c:"+p.Plate), telegram.InlineButton{Text: "💳 Bezahlen", URL: fairparken.PayURL(p.Plate)}),
+		row(btn("🔔 Alarme", "al:"+p.Plate)),
 		row(btn("🏷 Tarife", "t:"+p.Plate), btn("🎟 Rabattcode", "v:"+p.Plate)),
 		row(btn("⚙️ Einstellungen", "s:"+p.Plate), btn("📒 Verlauf", "hist:"+p.Plate)),
 		row(btn("✏️ Umbenennen", "rn:"+p.Plate), btn("🗑 Entfernen", "r:"+p.Plate)),
@@ -355,7 +405,7 @@ func (b *Bot) updatePlate(ctx context.Context, chatID, msgID int64, plate string
 		b.fail(ctx, chatID, "Speichern", err)
 		return
 	}
-	b.showSettings(ctx, chatID, msgID, plate, "✅ Gespeichert.")
+	b.showAlarms(ctx, chatID, msgID, plate)
 }
 
 func (b *Bot) setQuiet(ctx context.Context, chatID, msgID int64, plate string, cs store.ChatSettings) {
@@ -397,7 +447,7 @@ func (b *Bot) showPriceMenu(ctx context.Context, chatID, msgID int64, plate stri
 	}
 	k.InlineKeyboard = append(k.InlineKeyboard,
 		row(btn("🚫 Aus", "plv:"+plate+":0"), btn("✏️ Anderer Betrag", "pli:"+plate)),
-		row(btn("⬅️ Zurück", "s:"+plate)))
+		row(btn("⬅️ Zurück", "al:"+plate)))
 	b.show(ctx, chatID, msgID, fmt.Sprintf("💸 <b>Preisalarm</b> für %s\nAktuell: %s\n\nIch melde mich, sobald die Parkgebühr diesen Betrag erreicht.",
 		plateTitle(p.Plate, p.Label), cur), k)
 }
@@ -423,7 +473,7 @@ func (b *Bot) showDurationMenu(ctx context.Context, chatID, msgID int64, plate s
 	}
 	k.InlineKeyboard = append(k.InlineKeyboard,
 		row(btn("🚫 Aus", "dlv:"+plate+":0"), btn("✏️ Andere Dauer", "dli:"+plate)),
-		row(btn("⬅️ Zurück", "s:"+plate)))
+		row(btn("⬅️ Zurück", "al:"+plate)))
 	b.show(ctx, chatID, msgID, fmt.Sprintf("⏱ <b>Parkdauer-Alarm</b> für %s\nAktuell: %s\n\nIch melde mich, wenn der Wagen länger als diese Zeit parkt.",
 		plateTitle(p.Plate, p.Label), cur), k)
 }
@@ -503,6 +553,16 @@ func (b *Bot) handleMenuCallback(ctx context.Context, chatID, msgID int64, kind,
 		b.showPlates(ctx, chatID, msgID)
 	case "v":
 		b.ask(ctx, chatID, inVoucher, arg, "", "🎟 Schick mir den Rabattcode für <b>"+esc(arg)+"</b>.")
+	case "al":
+		b.showAlarms(ctx, chatID, msgID, arg)
+	case "alc", "alr":
+		b.updatePlate(ctx, chatID, msgID, arg, func(s *store.PlateSettings) {
+			if kind == "alc" {
+				s.PriceChange = !s.PriceChange
+			} else {
+				s.Remind = !s.Remind
+			}
+		})
 	case "pl":
 		b.showPriceMenu(ctx, chatID, msgID, arg)
 	case "plv":

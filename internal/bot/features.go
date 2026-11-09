@@ -65,7 +65,7 @@ func settingsKeyboard(p store.Plate) *telegram.InlineKeyboard {
 		{{Text: pause, CallbackData: "sp:" + p.Plate}},
 		{{Text: "🔔 Frist-Erinnerung " + onOff(!p.Remind) + "schalten", CallbackData: "sr:" + p.Plate}},
 		{{Text: "📈 Preiserhöhungen " + onOff(!p.PriceChange) + "schalten", CallbackData: "sc:" + p.Plate}},
-		{{Text: "💸 Preisalarm", CallbackData: "pl:" + p.Plate}, {Text: "⏱ Dauer-Alarm", CallbackData: "dl:" + p.Plate}},
+		{{Text: "🔔 Alarme", CallbackData: "al:" + p.Plate}},
 		{{Text: "🌙 Ruhezeit", CallbackData: "q:" + p.Plate}, {Text: "⬅️ Zurück", CallbackData: "p:" + p.Plate}},
 	}}
 }
