@@ -65,12 +65,15 @@ type Session struct {
 	ExitedAt     time.Time // zero while the car is (or was last seen) parked
 	Outcome      string    // set when closed
 	Missing      int       // consecutive checks in which the API didn't return it
+	MissingSince time.Time // first of these checks
 }
 
 // Session outcomes.
 const (
-	OutcomePaid  = "paid"  // left with a fee due, then paid
-	OutcomeNoFee = "nofee" // left without a fee due: free or paid before leaving
+	OutcomePaid      = "paid"      // left with a fee due, then paid
+	OutcomePrepaid   = "prepaid"   // left without a fee due after the grace period: paid before leaving
+	OutcomeNoFee     = "nofee"     // left without a fee due within the grace period: free
+	OutcomeUncertain = "uncertain" // left without a fee due around the end of the grace period
 )
 
 const schema = `
@@ -140,6 +143,7 @@ var addedColumns = map[string][]column{
 		{"exited_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"outcome", "TEXT NOT NULL DEFAULT ''"},
 		{"missing", "INTEGER NOT NULL DEFAULT 0"}, // consecutive checks without the session
+		{"missing_since", "INTEGER NOT NULL DEFAULT 0"},
 	},
 }
 
@@ -359,7 +363,7 @@ func (s *Store) UpsertSession(ctx context.Context, plate, key, item string) (cre
 		return false, false, err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE sessions SET item = ?, last_seen = ?, closed = 0, missing = 0,
+		`UPDATE sessions SET item = ?, last_seen = ?, closed = 0, missing = 0, missing_since = 0,
 		 outcome = CASE WHEN closed = 1 THEN '' ELSE outcome END
 		 WHERE plate = ? AND key = ?`, item, now, plate, key)
 	return false, reopened, err
@@ -369,16 +373,37 @@ func (s *Store) UpsertSession(ctx context.Context, plate, key, item string) (cre
 func (s *Store) MarkMissing(ctx context.Context, plate, key string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`UPDATE sessions SET missing = missing + 1 WHERE plate = ? AND key = ? RETURNING missing`, plate, key).Scan(&n)
+		`UPDATE sessions SET missing = missing + 1,
+		 missing_since = CASE WHEN missing = 0 THEN ? ELSE missing_since END
+		 WHERE plate = ? AND key = ? RETURNING missing`, time.Now().Unix(), plate, key).Scan(&n)
 	return n, err
 }
 
-const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent, s.exited_at, s.outcome, s.missing`
+// Meta returns a stored setting or ErrNotFound.
+func (s *Store) Meta(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return v, err
+}
+
+func (s *Store) SetMeta(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent, s.exited_at, s.outcome, s.missing, s.missing_since`
 
 func scanSession(rows *sql.Rows) (Session, error) {
 	var x Session
-	var first, last, exited int64
-	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome, &x.Missing)
+	var first, last, exited, missingSince int64
+	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome, &x.Missing, &missingSince)
+	if missingSince > 0 {
+		x.MissingSince = time.Unix(missingSince, 0)
+	}
 	x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
 	if exited > 0 {
 		x.ExitedAt = time.Unix(exited, 0)

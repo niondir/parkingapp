@@ -35,7 +35,7 @@ Für alles gibt es auch Befehle:
 | `/dauer [Kennzeichen] 3` | Meldung nach 3 h Parkdauer (`1,5`, `90m`, `aus`) |
 | `/ruhezeit 22-7` | Meldungen in der Zeit ohne Ton (`aus`) |
 | `/remove [Kennzeichen]` | Kennzeichen entfernen |
-| `/users`, `/allow ID`, `/block ID`, `/stats`, `/rundnachricht Text` | nur Admins, siehe [Zugang](#zugang) |
+| `/users`, `/allow ID`, `/block ID`, `/stats`, `/rundnachricht Text`, `/kulanz 15` | nur Admins, siehe [Zugang](#zugang) |
 
 Der Verlauf zeigt nur Parkvorgänge, die der Bot gesehen hat, nachdem der Nutzer das Kennzeichen hinzugefügt hat. Als Gebühr gilt der zuletzt gesehene Betrag.
 Pausierte Kennzeichen werden nicht abgefragt, solange niemand sonst sie aktiv überwacht.
@@ -105,8 +105,14 @@ Daraus leitet der Bot ab (Schwelle 3 min zwischen Abfragezeit und `realUTC_OUT`)
 |---|---|---|
 | Vorgang da, `realUTC_OUT` ≈ jetzt | parkt | „Neuer Parkvorgang“ mit „Bei Zahlung jetzt“ |
 | Vorgang da, `realUTC_OUT` steht | ausgefahren, Gebühr offen | „Ausfahrt erkannt“ mit offenem Betrag und Frist |
-| verschwindet, während er noch „parkt“ | ausgefahren ohne offene Gebühr (Freiparkzeit oder vorher bezahlt) | „ohne Gebühr“ |
+| verschwindet, während er noch „parkt“, Parkdauer ≤ Kulanzzeit | kostenlos ausgefahren | „kostenlos“ |
+| verschwindet, während er noch „parkt“, Parkdauer > Kulanzzeit | vor der Ausfahrt bezahlt (Automat/online) | „vermutlich vor der Ausfahrt bezahlt“, zählt mit zuletzt angezeigtem Preis in die Kosten |
+| verschwindet, Kulanzzeit liegt in der Spanne der möglichen Parkdauer | nicht entscheidbar | „kostenlos oder vor der Ausfahrt bezahlt“ |
 | verschwindet nach „Ausfahrt erkannt“ | bezahlt | „ist bezahlt“ |
+
+Die Ausfahrt liegt zwischen der letzten Abfrage, die das Auto noch parkend gesehen hat, und der ersten ohne Vorgang; die Parkdauer ist daher nur als Spanne bekannt.
+
+**Kulanzzeit:** Admin-Einstellung im Hauptmenü („⏳ Kulanzzeit“) oder `/kulanz 15`, Standard aus `GRACE_PERIOD` (15 min). Sie gilt für alle Parkplätze; parkplatzspezifische Freiparkzeiten (z. B. länger mit Kassenbon) kennt der Bot nicht.
 
 Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
 
@@ -114,6 +120,6 @@ Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
 - „ohne Gebühr“/„bezahlt“ erst, wenn der Vorgang bei zwei Abfragen hintereinander fehlt (ca. 3–7 min nach der Ausfahrt).
 - Taucht ein als beendet gemeldeter Vorgang wieder auf, kommt eine Korrektur („doch noch offen“), und er wird weiter überwacht.
 
-Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API nicht unterscheidbar. Bisher beobachtet ist nur die kostenlose Ausfahrt; dass ein Vorgang mit Gebühr nach der Ausfahrt bis zur Zahlung (max. 48 h) in der Suche bleibt, folgt aus der Nachzahl-Möglichkeit der Website, ist aber noch nicht live gesehen.
+Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API selbst nicht unterscheidbar, nur über die Kulanzzeit. Bisher beobachtet ist nur die kostenlose Ausfahrt; dass ein Vorgang mit Gebühr nach der Ausfahrt bis zur Zahlung (max. 48 h) in der Suche bleibt, folgt aus der Nachzahl-Möglichkeit der Website, ist aber noch nicht live gesehen.
 
 Abfrage-Last: ein Request pro überwachtem Kennzeichen alle `POLL_INTERVAL` (Standard 3 min, mit Jitter), dazwischen `REQUEST_GAP`.

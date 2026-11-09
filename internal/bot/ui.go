@@ -66,6 +66,7 @@ const (
 	inQuiet
 	inBroadcast
 	inBroadcastConfirm
+	inGrace
 )
 
 const inputTimeout = 15 * time.Minute
@@ -199,6 +200,18 @@ func (b *Bot) handleInput(ctx context.Context, chatID int64, p *pending, text st
 		b.ask(ctx, chatID, inBroadcastConfirm, "", text,
 			fmt.Sprintf("Vorschau:\n\n📢 %s\n\nAn %d Chats senden?", esc(text), n),
 			row(btn("✅ Senden", "abx")))
+	case inGrace:
+		if !b.isAdmin(chatID) {
+			b.endPending(ctx, chatID, "")
+			return
+		}
+		m, ok := parseMinutes(text)
+		if !ok {
+			b.retry(ctx, chatID, "Bitte Minuten von 0 bis 1440 schicken, z. B. <code>15</code>.")
+			return
+		}
+		b.endPending(ctx, chatID, fmt.Sprintf("→ %d min", m))
+		b.setGrace(ctx, chatID, 0, chatID, m)
 	case inBroadcastConfirm:
 		b.retry(ctx, chatID, "Bitte mit „Senden“ bestätigen.")
 	}
@@ -256,7 +269,8 @@ func (b *Bot) showMain(ctx context.Context, chatID, msgID int64) {
 	)
 	if b.isAdmin(chatID) {
 		k.InlineKeyboard = append(k.InlineKeyboard,
-			row(btn("👥 Nutzer", "au"), btn("📊 Statistik", "as"), btn("📢 Rundnachricht", "ab")))
+			row(btn("👥 Nutzer", "au"), btn("📊 Statistik", "as")),
+			row(btn("📢 Rundnachricht", "ab"), btn("⏳ Kulanzzeit", "gr")))
 	}
 	b.show(ctx, chatID, msgID, text, k)
 }

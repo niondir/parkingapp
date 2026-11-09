@@ -65,7 +65,7 @@ func plateTitle(plate, label string) string {
 }
 
 // fmtItem renders a parking session as fetched at time at.
-func fmtItem(it fairparken.ParkingItem, label string, at time.Time) string {
+func fmtItem(it fairparken.ParkingItem, label string, at time.Time, grace time.Duration) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🚗 %s\n", plateTitle(it.Plate, label))
 	if loc := it.Location(); loc != "" {
@@ -102,7 +102,9 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time) string {
 		b.WriteString("\n")
 	}
 	if parked {
-		b.WriteString("ℹ️ Fährst du in einer Freiparkzeit aus, fällt nichts an.\n")
+		if free := in.Add(grace); okIn && grace > 0 && at.Before(free) {
+			fmt.Fprintf(&b, "ℹ️ Kostenlos, wenn du bis %s ausfährst (Kulanzzeit %s).\n", free.In(berlin).Format("15:04"), fmtDuration(grace))
+		}
 	} else if okOut {
 		fmt.Fprintf(&b, "⌛ Online zahlbar bis ca. %s\n", fmtTime(out.Add(PayWindow)))
 	}
@@ -112,36 +114,51 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// fmtClosed renders a session that disappeared from the API. lastSeen is
-// when the bot saw it the last time.
-func fmtClosed(it fairparken.ParkingItem, label, outcome string, lastSeen time.Time) string {
+// closeInfo describes how a session ended.
+type closeInfo struct {
+	outcome  string
+	min, max time.Duration // parking duration; the exit happened between two checks
+	grace    time.Duration
+}
+
+// fmtClosed renders a session that disappeared from the API.
+func fmtClosed(it fairparken.ParkingItem, label string, ci closeInfo) string {
 	var b strings.Builder
 	title := plateTitle(it.Plate, label)
-	switch outcome {
+	dur := "ca. " + fmtDuration(ci.min)
+	if ci.max-ci.min >= time.Minute {
+		dur = fmtDuration(ci.min) + " bis " + fmtDuration(ci.max)
+	}
+	switch ci.outcome {
 	case store.OutcomePaid:
 		fmt.Fprintf(&b, "✅ Parkvorgang von %s ist bezahlt.", title)
+	case store.OutcomePrepaid:
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also länger als die Kulanzzeit (%s) – vermutlich vor der Ausfahrt bezahlt.",
+			title, dur, fmtDuration(ci.grace))
+	case store.OutcomeUncertain:
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also um die Kulanzzeit (%s) herum – kostenlos oder vor der Ausfahrt bezahlt.",
+			title, dur, fmtDuration(ci.grace))
 	default:
-		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist – kostenlos (z. B. Freiparkzeit) oder vor der Ausfahrt bezahlt.", title)
+		fmt.Fprintf(&b, "✅ %s ist kostenlos ausgefahren (Parkdauer %s, Kulanzzeit %s).", title, dur, fmtDuration(ci.grace))
 	}
 	if loc := it.Location(); loc != "" {
 		fmt.Fprintf(&b, "\n📍 %s", esc(loc))
 	}
 	if in, ok := it.In(); ok {
-		end := lastSeen
-		if out, ok := it.Out(); ok && outcome == store.OutcomePaid {
-			end = out
-		}
-		fmt.Fprintf(&b, "\n⏱ %s – %s, ca. %s", fmtTime(in), end.In(berlin).Format("15:04"), fmtDuration(end.Sub(in)))
+		fmt.Fprintf(&b, "\n⏵ Einfahrt: %s", fmtTime(in))
 	}
-	if outcome == store.OutcomePaid && it.Price != nil {
+	if (ci.outcome == store.OutcomePaid || ci.outcome == store.OutcomePrepaid) && it.Price != nil {
 		fmt.Fprintf(&b, "\n💶 %s", fmtEuro(*it.Price))
+		if ci.outcome == store.OutcomePrepaid {
+			b.WriteString(" (zuletzt angezeigt)")
+		}
 	}
 	return b.String()
 }
 
 // fmtResult renders a search hit including day tickets offered at the area.
-func fmtResult(r fairparken.SearchResult, label string, at time.Time) string {
-	s := fmtItem(r.AnprResult, label, at)
+func fmtResult(r fairparken.SearchResult, label string, at time.Time, grace time.Duration) string {
+	s := fmtItem(r.AnprResult, label, at, grace)
 	if len(r.Articles) == 0 {
 		return s
 	}

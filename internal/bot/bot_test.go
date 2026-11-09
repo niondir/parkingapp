@@ -154,7 +154,7 @@ func setup(t *testing.T) (*Bot, *fakeTG, *fakeAPI) {
 	fp := fairparken.New()
 	fp.BaseURL = srv.URL + "/"
 	tg := &fakeTG{}
-	b := New(Config{PollInterval: time.Minute, MaxPlates: 2}, tg, fp, st)
+	b := New(Config{PollInterval: time.Minute, MaxPlates: 2, GracePeriod: 15 * time.Minute}, tg, fp, st)
 	return b, tg, api
 }
 
