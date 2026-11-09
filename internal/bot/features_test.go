@@ -143,6 +143,7 @@ func TestHistory(t *testing.T) {
 	b.pollAll(ctx)
 	api.set("HHKF860E")
 	b.pollAll(ctx)
+	b.pollAll(ctx)
 	s2 := session(time.Now().UTC().Add(-time.Hour).Format("2006-01-02 15:04:05"))
 	s2["price"] = 2.0
 	api.set("HHKF860E", s2)

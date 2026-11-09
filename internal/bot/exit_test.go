@@ -49,8 +49,12 @@ func TestFreeExit(t *testing.T) {
 		t.Fatalf("still parked, nothing new: %s", texts(m))
 	}
 
-	// Gone while parked: left without a fee.
+	// Gone while parked: left without a fee. One empty answer isn't enough.
 	api.set("HHKF860E")
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("got %s", texts(m))
+	}
 	b.pollAll(ctx)
 	m = tg.take()
 	if len(m) != 1 || !strings.Contains(m[0].text, "ohne dass eine Gebühr offen ist") || strings.Contains(m[0].text, "3,00 €") {
@@ -76,10 +80,16 @@ func TestExitWithFee(t *testing.T) {
 	b.pollAll(ctx)
 	tg.take()
 
-	// The car left 10 minutes ago, the session stays: fee due.
+	// The car left 10 minutes ago, the session stays: fee due. The exit time
+	// must stay the same over two checks before the exit counts.
 	s["realUTC_OUT"] = utc(time.Now().Add(-10 * time.Minute))
 	s["price"] = 6.0
 	api.set("HHKF860E", s)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("exit after one check: %s", texts(m))
+	}
+	b.clock = func() time.Time { return time.Now().Add(3 * time.Minute) }
 	b.pollAll(ctx)
 	m := tg.take()
 	if len(m) != 1 || !strings.Contains(m[0].text, "Ausfahrt erkannt") || !strings.Contains(m[0].text, "Offen: <b>6,00 €</b>") ||
@@ -97,6 +107,7 @@ func TestExitWithFee(t *testing.T) {
 	}
 
 	api.set("HHKF860E")
+	b.pollAll(ctx)
 	b.pollAll(ctx)
 	m = tg.take()
 	if len(m) != 1 || !strings.Contains(m[0].text, "ist bezahlt") || !strings.Contains(m[0].text, "6,00 €") {
@@ -119,5 +130,69 @@ func TestLegacySessionState(t *testing.T) {
 	exited["realUTC_OUT"] = utc(last.Add(-20 * time.Minute))
 	if got := sessionState(store.Session{Closed: true, LastSeen: last}, mustItem(t, exited)); got != store.OutcomePaid {
 		t.Errorf("gone after exit: %s", got)
+	}
+}
+
+func TestHiccupAndCorrection(t *testing.T) {
+	ctx := context.Background()
+	b, tg, api := setup(t)
+	b.handleText(ctx, 1, "/add HHKF860E")
+	tg.take()
+	live := liveSession(time.Now().Add(-10 * time.Minute))
+	api.set("HHKF860E", live)
+	b.pollAll(ctx)
+	tg.take()
+
+	// A single empty answer in between changes nothing.
+	api.set("HHKF860E")
+	b.pollAll(ctx)
+	api.set("HHKF860E", live)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("got %s", texts(m))
+	}
+
+	// Reported as finished, then back: correction.
+	api.set("HHKF860E")
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	tg.take()
+	api.set("HHKF860E", live)
+	b.pollAll(ctx)
+	m := tg.take()
+	if len(m) != 1 || !strings.Contains(m[0].text, "Korrektur") || !strings.Contains(m[0].text, "doch noch offen") {
+		t.Fatalf("got %s", texts(m))
+	}
+	b.handleText(ctx, 1, "/verlauf")
+	if m := tg.take(); !strings.Contains(m[0].text, "<b>läuft</b>") {
+		t.Fatalf("reopened session must be running again: %s", m[0].text)
+	}
+}
+
+func TestExitWithoutFee(t *testing.T) {
+	ctx := context.Background()
+	b, tg, api := setup(t)
+	b.handleText(ctx, 1, "/add HHKF860E")
+	tg.take()
+	s := liveSession(time.Now().Add(-10 * time.Minute))
+	api.set("HHKF860E", s)
+	b.pollAll(ctx)
+	tg.take()
+
+	// Exit with price 0: no "fee due" message, and gone means free, not paid.
+	s["realUTC_OUT"] = utc(time.Now().Add(-5 * time.Minute))
+	s["price"] = 0.0
+	api.set("HHKF860E", s)
+	b.pollAll(ctx)
+	b.clock = func() time.Time { return time.Now().Add(3 * time.Minute) }
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("got %s", texts(m))
+	}
+	api.set("HHKF860E")
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "ohne dass eine Gebühr offen ist") {
+		t.Fatalf("got %s", texts(m))
 	}
 }
