@@ -62,7 +62,15 @@ type Session struct {
 	LastSeen     time.Time
 	Closed       bool
 	ReminderSent bool
+	ExitedAt     time.Time // zero while the car is (or was last seen) parked
+	Outcome      string    // set when closed
 }
+
+// Session outcomes.
+const (
+	OutcomePaid  = "paid"  // left with a fee due, then paid
+	OutcomeNoFee = "nofee" // left without a fee due: free or paid before leaving
+)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS plates (
@@ -122,8 +130,15 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+type column struct{ name, def string }
+
 // columns added after the first release
-var plateColumns = []struct{ name, def string }{
+var addedColumns = map[string][]column{
+	"plates":   plateColumns,
+	"sessions": {{"exited_at", "INTEGER NOT NULL DEFAULT 0"}, {"outcome", "TEXT NOT NULL DEFAULT ''"}},
+}
+
+var plateColumns = []column{
 	{"paused", "INTEGER NOT NULL DEFAULT 0"},
 	{"remind", "INTEGER NOT NULL DEFAULT 1"},
 	{"price_change", "INTEGER NOT NULL DEFAULT 0"},
@@ -132,24 +147,26 @@ var plateColumns = []struct{ name, def string }{
 }
 
 func migrate(db *sql.DB) error {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('plates')`)
-	if err != nil {
-		return err
-	}
-	have := map[string]bool{}
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
+	for table, cols := range addedColumns {
+		rows, err := db.Query(`SELECT name FROM pragma_table_info('` + table + `')`)
+		if err != nil {
 			return err
 		}
-		have[n] = true
-	}
-	rows.Close()
-	for _, c := range plateColumns {
-		if !have[c.name] {
-			if _, err := db.Exec(`ALTER TABLE plates ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+		have := map[string]bool{}
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				rows.Close()
 				return err
+			}
+			have[n] = true
+		}
+		rows.Close()
+		for _, c := range cols {
+			if !have[c.name] {
+				if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -304,20 +321,17 @@ func (s *Store) SetChatSettings(ctx context.Context, chatID int64, cs ChatSettin
 // OpenSessions returns the sessions of a plate that are not closed yet.
 func (s *Store) OpenSessions(ctx context.Context, plate string) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT plate, key, item, first_seen, last_seen, closed, reminder_sent
-		 FROM sessions WHERE plate = ? AND closed = 0`, plate)
+		`SELECT `+sessionCols+` FROM sessions s WHERE plate = ? AND closed = 0`, plate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var res []Session
 	for rows.Next() {
-		var x Session
-		var first, last int64
-		if err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent); err != nil {
+		x, err := scanSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
 		res = append(res, x)
 	}
 	return res, rows.Err()
@@ -340,8 +354,27 @@ func (s *Store) UpsertSession(ctx context.Context, plate, key, item string) (cre
 	return false, err
 }
 
-func (s *Store) CloseSession(ctx context.Context, plate, key string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET closed = 1 WHERE plate = ? AND key = ?`, plate, key)
+const sessionCols = `s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent, s.exited_at, s.outcome`
+
+func scanSession(rows *sql.Rows) (Session, error) {
+	var x Session
+	var first, last, exited int64
+	err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent, &exited, &x.Outcome)
+	x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
+	if exited > 0 {
+		x.ExitedAt = time.Unix(exited, 0)
+	}
+	return x, err
+}
+
+func (s *Store) CloseSession(ctx context.Context, plate, key, outcome string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET closed = 1, outcome = ? WHERE plate = ? AND key = ?`, outcome, plate, key)
+	return err
+}
+
+// MarkExited records that the car left the car park.
+func (s *Store) MarkExited(ctx context.Context, plate, key string, t time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET exited_at = ? WHERE plate = ? AND key = ?`, t.Unix(), plate, key)
 	return err
 }
 
@@ -482,7 +515,7 @@ func (s *Store) Chats(ctx context.Context) ([]int64, error) {
 // see what happened before they watched a plate.
 func (s *Store) History(ctx context.Context, chatID int64, since time.Time) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.plate, s.key, s.item, s.first_seen, s.last_seen, s.closed, s.reminder_sent
+		`SELECT `+sessionCols+`
 		 FROM sessions s JOIN plates p ON p.plate = s.plate AND p.chat_id = ?
 		 WHERE s.first_seen >= p.created_at AND s.first_seen >= ?
 		 ORDER BY s.first_seen DESC`, chatID, since.Unix())
@@ -492,12 +525,10 @@ func (s *Store) History(ctx context.Context, chatID int64, since time.Time) ([]S
 	defer rows.Close()
 	var res []Session
 	for rows.Next() {
-		var x Session
-		var first, last int64
-		if err := rows.Scan(&x.Plate, &x.Key, &x.Item, &first, &last, &x.Closed, &x.ReminderSent); err != nil {
+		x, err := scanSession(rows)
+		if err != nil {
 			return nil, err
 		}
-		x.FirstSeen, x.LastSeen = time.Unix(first, 0), time.Unix(last, 0)
 		res = append(res, x)
 	}
 	return res, rows.Err()

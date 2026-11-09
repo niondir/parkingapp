@@ -421,7 +421,7 @@ func (b *Bot) cmdCheck(ctx context.Context, chatID int64, args string) {
 			if !watched {
 				kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}})
 			}
-			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label), kb)
+			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label, time.Now()), kb)
 		}
 	}
 }

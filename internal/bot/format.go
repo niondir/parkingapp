@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/niondir/parkingapp/internal/fairparken"
+	"github.com/niondir/parkingapp/internal/store"
 	"github.com/niondir/parkingapp/internal/telegram"
 )
 
@@ -63,40 +64,84 @@ func plateTitle(plate, label string) string {
 	return "<b>" + esc(plate) + "</b>"
 }
 
-// fmtItem renders a parking session.
-func fmtItem(it fairparken.ParkingItem, label string) string {
+// fmtItem renders a parking session as fetched at time at.
+func fmtItem(it fairparken.ParkingItem, label string, at time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🚗 %s\n", plateTitle(it.Plate, label))
-	if it.QuotaAddress != "" {
-		fmt.Fprintf(&b, "📍 %s\n", esc(it.QuotaAddress))
+	if loc := it.Location(); loc != "" {
+		fmt.Fprintf(&b, "📍 %s\n", esc(loc))
 	}
 	in, okIn := it.In()
 	out, okOut := it.Out()
+	parked := it.Parked(at)
 	if okIn {
 		fmt.Fprintf(&b, "⏵ Einfahrt: %s\n", fmtTime(in))
 	}
-	if okOut {
-		fmt.Fprintf(&b, "⏹ Bis: %s\n", fmtTime(out))
+	if okOut && !parked {
+		fmt.Fprintf(&b, "⏹ Ausfahrt: %s\n", fmtTime(out))
 	}
 	if okIn && okOut {
-		fmt.Fprintf(&b, "⏱ Dauer: %s\n", fmtDuration(out.Sub(in)))
+		if parked {
+			fmt.Fprintf(&b, "⏱ Parkt seit: %s\n", fmtDuration(out.Sub(in)))
+		} else {
+			fmt.Fprintf(&b, "⏱ Dauer: %s\n", fmtDuration(out.Sub(in)))
+		}
 	}
 	if it.Price != nil {
-		fmt.Fprintf(&b, "💶 Gebühr: <b>%s</b>", fmtEuro(*it.Price))
+		if parked {
+			fmt.Fprintf(&b, "💶 Bei Zahlung jetzt: <b>%s</b>", fmtEuro(*it.Price))
+			if paid, ok := it.Paid(); ok {
+				fmt.Fprintf(&b, " (deckt bis %s)", paid.In(berlin).Format("15:04"))
+			}
+		} else {
+			fmt.Fprintf(&b, "💶 Offen: <b>%s</b>", fmtEuro(*it.Price))
+		}
 		if it.OriginalPrice != nil && *it.OriginalPrice != *it.Price {
 			fmt.Fprintf(&b, " (regulär %s)", fmtEuro(*it.OriginalPrice))
 		}
 		b.WriteString("\n")
 	}
-	if okOut {
+	if parked {
+		b.WriteString("ℹ️ Fährst du in einer Freiparkzeit aus, fällt nichts an.\n")
+	} else if okOut {
 		fmt.Fprintf(&b, "⌛ Online zahlbar bis ca. %s\n", fmtTime(out.Add(PayWindow)))
+	}
+	if it.HasVoucher {
+		b.WriteString("🎟 Rabattcode möglich\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// fmtClosed renders a session that disappeared from the API. lastSeen is
+// when the bot saw it the last time.
+func fmtClosed(it fairparken.ParkingItem, label, outcome string, lastSeen time.Time) string {
+	var b strings.Builder
+	title := plateTitle(it.Plate, label)
+	switch outcome {
+	case store.OutcomePaid:
+		fmt.Fprintf(&b, "✅ Parkvorgang von %s ist bezahlt.", title)
+	default:
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist – kostenlos (z. B. Freiparkzeit) oder vor der Ausfahrt bezahlt.", title)
+	}
+	if loc := it.Location(); loc != "" {
+		fmt.Fprintf(&b, "\n📍 %s", esc(loc))
+	}
+	if in, ok := it.In(); ok {
+		end := lastSeen
+		if out, ok := it.Out(); ok && outcome == store.OutcomePaid {
+			end = out
+		}
+		fmt.Fprintf(&b, "\n⏱ %s – %s, ca. %s", fmtTime(in), end.In(berlin).Format("15:04"), fmtDuration(end.Sub(in)))
+	}
+	if outcome == store.OutcomePaid && it.Price != nil {
+		fmt.Fprintf(&b, "\n💶 %s", fmtEuro(*it.Price))
+	}
+	return b.String()
+}
+
 // fmtResult renders a search hit including day tickets offered at the area.
-func fmtResult(r fairparken.SearchResult, label string) string {
-	s := fmtItem(r.AnprResult, label)
+func fmtResult(r fairparken.SearchResult, label string, at time.Time) string {
+	s := fmtItem(r.AnprResult, label, at)
 	if len(r.Articles) == 0 {
 		return s
 	}

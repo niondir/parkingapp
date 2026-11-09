@@ -211,7 +211,7 @@ func TestMonitorLifecycle(t *testing.T) {
 	api.set("HHKF860E")
 	b.pollAll(ctx)
 	m = tg.take()
-	if len(m) != 4 || !strings.Contains(m[0].text, "nicht mehr offen") {
+	if len(m) != 4 || !strings.Contains(m[0].text, "ist bezahlt") {
 		t.Fatalf("expected closed notification for 2 sessions x 2 chats, got %+v", m)
 	}
 
@@ -269,7 +269,7 @@ func TestTariffs(t *testing.T) {
 	api.set("HHKF860E")
 	b.handleText(ctx, 1, "/tarife")
 	m = tg.take()
-	if len(m) != 2 || !strings.Contains(m[0].text, "nicht mehr offen") ||
+	if len(m) != 2 || !strings.Contains(m[0].text, "ist bezahlt") ||
 		!strings.Contains(m[1].text, "Wohnmobil") || !strings.Contains(m[1].text, "Teststr. 1") {
 		t.Fatalf("got %+v", m)
 	}
