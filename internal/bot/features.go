@@ -287,9 +287,8 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 		return
 	}
 	type month struct {
-		key   string
-		count int
-		sum   float64
+		count, free int
+		sum         float64
 	}
 	months := map[string]*month{}
 	var lines []string
@@ -306,28 +305,36 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 		mk := start.In(berlin).Format("2006-01")
 		m := months[mk]
 		if m == nil {
-			m = &month{key: mk}
+			m = &month{}
 			months[mk] = m
 		}
 		m.count++
-		price := ""
+		var price float64
 		if it.Price != nil {
-			m.sum += *it.Price
-			price = " · " + fmtEuro(*it.Price)
+			price = *it.Price
+		}
+		state, end := "", time.Now()
+		switch sessionState(s, it) {
+		case stateRunning:
+			state = " · <b>läuft</b>"
+		case stateDue:
+			m.sum += price
+			state = " · " + fmtEuro(price) + " <b>offen</b>"
+			end = s.LastSeen
+		case store.OutcomePaid:
+			m.sum += price
+			state = " · " + fmtEuro(price)
+			end = s.LastSeen
+		default:
+			m.free++
+			state = " · ohne Gebühr"
+			end = s.LastSeen
 		}
 		if len(lines) < 10 {
-			state := ""
-			if !s.Closed {
-				state = " · <b>offen</b>"
-			}
-			end := time.Now()
-			if s.Closed {
-				end = s.LastSeen
-			}
-			line := fmt.Sprintf("• %s · %s · %s%s%s", start.In(berlin).Format("02.01. 15:04"), esc(s.Plate),
-				fmtDuration(parkedFor(it, end)), price, state)
-			if it.QuotaAddress != "" {
-				line += "\n   " + esc(it.QuotaAddress)
+			line := fmt.Sprintf("• %s · %s · %s%s", start.In(berlin).Format("02.01. 15:04"), esc(s.Plate),
+				fmtDuration(parkedFor(it, end)), state)
+			if loc := it.Location(); loc != "" {
+				line += "\n   " + esc(loc)
 			}
 			lines = append(lines, line)
 		}
@@ -349,9 +356,35 @@ func (b *Bot) cmdHistory(ctx context.Context, chatID int64, args string) {
 		m := months[k]
 		t, _ := time.Parse("2006-01", k)
 		fmt.Fprintf(&sb, "\n%s: %d × · %s", t.Format("01/2006"), m.count, fmtEuro(m.sum))
+		if m.free > 0 {
+			fmt.Fprintf(&sb, " (%d ohne Gebühr)", m.free)
+		}
 	}
-	sb.WriteString("\n\n<i>Gebühr = zuletzt vom Bot gesehener Betrag; Zahlungen zwischen zwei Abfragen können abweichen.</i>")
+	sb.WriteString("\n\n<i>„Ohne Gebühr“: ausgefahren, ohne dass etwas offen war – in der Freiparkzeit oder vorher am Automaten bezahlt. Gebühr = zuletzt vom Bot gesehener Betrag.</i>")
 	b.reply(ctx, chatID, sb.String(), nil)
+}
+
+const (
+	stateRunning = "running" // still parked
+	stateDue     = "due"     // left, fee not paid yet
+)
+
+// sessionState is stateRunning, stateDue or the outcome of a closed session.
+func sessionState(s store.Session, it fairparken.ParkingItem) string {
+	if !s.Closed {
+		if s.ExitedAt.IsZero() && it.Parked(s.LastSeen) {
+			return stateRunning
+		}
+		return stateDue
+	}
+	if s.Outcome != "" {
+		return s.Outcome
+	}
+	// Closed before outcomes were stored: derive it the same way.
+	if it.Parked(s.LastSeen) {
+		return store.OutcomeNoFee
+	}
+	return store.OutcomePaid
 }
 
 // --- voucher ---

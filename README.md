@@ -91,10 +91,23 @@ Weitere Endpunkte:
 | `https://kassenzettel.fairparken.com` (`api/FileNumber`, `api/UploadReceiptImage`, `api/SubmitForm`) | Vertragsstrafe anfechten; braucht reCAPTCHA, daher nur verlinkt |
 | `https://pay.fairparken.at` | gleiche API für Österreich, nicht eingebunden |
 
-Offene Punkte, erst mit einem echten Parkvorgang prüfbar:
+Beobachtet an einem echten Parkvorgang (Kaufland Hamburg, 11/2026):
 
-- Ob die Suche schon während des Parkens einen Treffer liefert (die Website bietet Zahlung vor der Ausfahrt an, daher wahrscheinlich).
-- `price` wird als Euro interpretiert (der Web-Client rechnet `price * 100` in Cent um).
-- Was `realUTC_OUT` vor der Ausfahrt enthält. Die Erinnerung greift nur, wenn die Ausfahrtszeit fest ist.
+- Der Parkvorgang erscheint schon während des Parkens in der Suche (Push ca. 1–4 min nach der Einfahrt).
+- Solange das Auto steht, läuft `realUTC_OUT` minutengenau mit der aktuellen Zeit mit. Nach der Ausfahrt bleibt es stehen.
+- `price` ist in Euro und der Preis **bei Zahlung jetzt**, `paidUntil` die Zeit, bis zu der er gilt (z. B. 3,00 € für die erste Stunde) – auch innerhalb einer Freiparkzeit.
+- Eine kostenlose Ausfahrt (Freiparkzeit) ist nicht als solche erkennbar: der Vorgang verschwindet einfach.
+- Weitere Felder: `quotaAddition` (z. B. „Kaufland“), `hasVoucher` (vermutlich: Parkplatz nimmt Rabattcodes an), `isResult`, `readingId`, `subParkings`.
+
+Daraus leitet der Bot ab (Schwelle 3 min zwischen Abfragezeit und `realUTC_OUT`):
+
+| Beobachtung | Bedeutung | Meldung |
+|---|---|---|
+| Vorgang da, `realUTC_OUT` ≈ jetzt | parkt | „Neuer Parkvorgang“ mit „Bei Zahlung jetzt“ |
+| Vorgang da, `realUTC_OUT` steht | ausgefahren, Gebühr offen | „Ausfahrt erkannt“ mit offenem Betrag und Frist |
+| verschwindet, während er noch „parkt“ | ausgefahren ohne offene Gebühr (Freiparkzeit oder vorher bezahlt) | „ohne Gebühr“ |
+| verschwindet nach „Ausfahrt erkannt“ | bezahlt | „ist bezahlt“ |
+
+Bezahlen vor der Ausfahrt und kostenlose Ausfahrt sind über die API nicht unterscheidbar.
 
 Abfrage-Last: ein Request pro überwachtem Kennzeichen alle `POLL_INTERVAL` (Standard 3 min, mit Jitter), dazwischen `REQUEST_GAP`.

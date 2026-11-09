@@ -34,6 +34,9 @@ type ParkingItem struct {
 	VoucherValue  *float64 `json:"voucherValue"`
 	VoucherCode   *string  `json:"voucherCode,omitempty"`
 	OrderType     string   `json:"orderType"`
+	PaidUntil     string   `json:"paidUntil"`     // time covered by Price
+	QuotaAddition string   `json:"quotaAddition"` // e.g. the shop at the car park
+	HasVoucher    bool     `json:"hasVoucher"`    // the area accepts voucher codes (assumed)
 
 	// Raw keeps all fields as returned by the API, so unknown fields survive
 	// a round trip through Quote.
@@ -59,6 +62,29 @@ func (p ParkingItem) In() (time.Time, bool) { return parseTime(p.RealUTCIn) }
 
 // Out returns the exit time (or the time of calculation while still parked).
 func (p ParkingItem) Out() (time.Time, bool) { return parseTime(p.RealUTCOut) }
+
+// Paid returns the time until which Price covers parking.
+func (p ParkingItem) Paid() (time.Time, bool) { return parseTime(p.PaidUntil) }
+
+// Location is the address with the shop name, if any.
+func (p ParkingItem) Location() string {
+	if p.QuotaAddition != "" && p.QuotaAddress != "" {
+		return p.QuotaAddress + " (" + p.QuotaAddition + ")"
+	}
+	return p.QuotaAddress + p.QuotaAddition
+}
+
+// Parked reports whether the car was still on the car park when the item was
+// fetched at time at. While parked, the API keeps realUTC_OUT at the current
+// time; after leaving it stays at the exit time.
+func (p ParkingItem) Parked(at time.Time) bool {
+	out, ok := p.Out()
+	return !ok || at.Sub(out) < ExitThreshold
+}
+
+// ExitThreshold is how far realUTC_OUT may lag behind the fetch time while
+// the car is still parked (it has minute resolution).
+const ExitThreshold = 3 * time.Minute
 
 func parseTime(s string) (time.Time, bool) {
 	s = strings.TrimSpace(s)
