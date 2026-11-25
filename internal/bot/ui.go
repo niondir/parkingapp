@@ -255,7 +255,7 @@ func (b *Bot) finishAdd(ctx context.Context, chatID int64, plate, label string) 
 
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64) {
 	if _, err := b.tg.SendMsg(ctx, chatID,
-		"👋 Hallo! Ich melde mich, sobald für deine Kennzeichen ein Parkvorgang auf einem fair-parken-Parkplatz erkannt wird.\n\nAlles geht über die Buttons – unten findest du jederzeit „"+menuButton+"“.",
+		"👋 Hallo! Ich melde mich, sobald für deine Kennzeichen ein Parkvorgang auf einem fair-parken-Parkplatz erkannt wird – und in Parkhäusern mit Smart Web Pay, wenn du unter „📍 Stadt setzen“ deine Stadt wählst.\n\nAlles geht über die Buttons – unten findest du jederzeit „"+menuButton+"“.",
 		replyKeyboard); err != nil {
 		slog.Warn("send welcome", "chat", chatID, "err", err)
 	}

@@ -289,13 +289,15 @@ func (b *Bot) cmdHelp(ctx context.Context, chatID int64) {
 
 Ich prüfe alle paar Minuten, ob für deine Kennzeichen ein offener Parkvorgang auf einem fair-parken-Parkplatz (Kennzeichenerkennung, ohne Ticket) existiert, und schicke dir eine Nachricht mit Bezahl-Button.
 
+<b>Parkhäuser mit Smart Web Pay</b> (Scheidt &amp; Bachmann) prüfe ich zusätzlich in deiner Stadt – setze sie unter „📍 Stadt setzen“ im Hauptmenü oder mit /stadt. Ohne Stadt sucht „Prüfen“ in allen Städten, das dauert länger.
+
 <b>Bedienung:</b> Alles geht über „`+menuButton+`“ unten im Chat. Unter <i>Meine Kennzeichen</i> → Kennzeichen antippen findest du Prüfen, Bezahlen, Tarife, Rabattcode, Verlauf und die Einstellungen (Pause, Preis- und Dauer-Alarm, Ruhezeit).
 
 Ein Kennzeichen einfach als Nachricht schicken prüft es sofort.
 Fehler oder Ideen? Unter „💬 Feedback“ – du siehst dort auch, was daraus geworden ist.
-Bezahlt wird auf der offiziellen Seite pay.fairparken.com – der Bot sieht keine Zahlungsdaten.
+Bezahlt wird auf der offiziellen Seite des Betreibers (pay.fairparken.com bzw. Smart Web Pay) – der Bot sieht keine Zahlungsdaten.
 
-<i>Für Tipp-Fans gibt es auch Befehle: /add, /check, /tarife, /verlauf, /alarm, /dauer, /ruhezeit, /rabatt, /kassenzettel.</i>`, kb(row(btn("🏠 Hauptmenü", "m"))))
+<i>Für Tipp-Fans gibt es auch Befehle: /add, /check, /stadt, /tarife, /verlauf, /alarm, /dauer, /ruhezeit, /rabatt, /kassenzettel.</i>`, kb(row(btn("🏠 Hauptmenü", "m"))))
 }
 
 func (b *Bot) cmdAdd(ctx context.Context, chatID int64, args string) {

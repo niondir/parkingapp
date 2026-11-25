@@ -1,6 +1,6 @@
 # parkingapp
 
-Telegram-Bot für Parkplätze von [fair parken](https://www.fairparken.com/de-DE/pay) mit FreeFlow (Kennzeichenerkennung, ohne Ticket).
+Telegram-Bot für Parkplätze von [fair parken](https://www.fairparken.com/de-DE/pay) mit FreeFlow (Kennzeichenerkennung, ohne Ticket) und für Parkhäuser mit [Smart Web Pay](https://smart-web-pay.scheidt-bachmann.net/) von Scheidt & Bachmann.
 
 - Mehrere Nutzer, jeder verwaltet eigene Kennzeichen
 - Push-Nachricht, sobald ein Parkvorgang für ein Kennzeichen erkannt wird, und wenn er nicht mehr offen ist
@@ -30,6 +30,7 @@ Für alles gibt es auch Befehle:
 | `/verlauf [Kennzeichen]` | letzte 10 Parkvorgänge, Kosten pro Monat (6 Monate) |
 | `/rabatt CODE [Kennzeichen]` | Preis eines offenen Parkvorgangs mit Rabattcode |
 | `/kassenzettel` | Link zur offiziellen Seite, um eine Vertragsstrafe mit Kassenzettel anzufechten |
+| `/stadt [Name]` | Stadt für Smart Web Pay setzen (`aus` = keine), ohne Name Menü mit den letzten 10 Städten |
 | `/einstellungen [Kennzeichen]` | Pausieren, Frist-Erinnerung, jede Preiserhöhung melden (Buttons) |
 | `/alarm [Kennzeichen] 10` | Meldung, wenn die Gebühr 10 € erreicht (`aus` = abschalten) |
 | `/dauer [Kennzeichen] 3` | Meldung nach 3 h Parkdauer (`1,5`, `90m`, `aus`) |
@@ -40,6 +41,18 @@ Für alles gibt es auch Befehle:
 
 Der Verlauf zeigt nur Parkvorgänge, die der Bot gesehen hat, nachdem der Nutzer das Kennzeichen hinzugefügt hat. Als Gebühr gilt der zuletzt gesehene Betrag.
 Pausierte Kennzeichen werden nicht abgefragt, solange niemand sonst sie aktiv überwacht.
+
+## Smart Web Pay
+
+Zusätzlich zu fair parken sucht der Bot Kennzeichen in Parkhäusern, die über Smart Web Pay (Scheidt & Bachmann, System entervo) bezahlt werden. Deren API sucht immer in genau einer Stadt, deshalb setzt jeder Nutzer eine Stadt („📍 Stadt setzen“ im Hauptmenü, `/stadt`); die letzten 10 stehen dort zur Schnellauswahl. Der Monitor fragt je Kennzeichen die Städte aller Nutzer ab, die es überwachen. „Prüfen“ ohne gesetzte Stadt sucht in allen Städten und bietet bei einem Treffer an, die Stadt zu übernehmen. Meldungen ohne Treffer nennen, wo gesucht wurde, mit Button zum Wechseln.
+
+Treffer laufen durch dieselben Meldungen, Alarme und denselben Verlauf wie bei fair parken; „💳 Bezahlen“ öffnet die Seite des Betreibers, bei dem der Parkvorgang offen ist. Tarife, Rabattcode, Frist-Erinnerung und Karenzzeit gelten nur für fair parken.
+
+Die API ist nicht dokumentiert (Client: `internal/swp`, Live-Test: `SWP_LIVE=1 SWP_CITY=Hamburg SWP_PLATE=HHAB123 go test ./internal/swp -run Live -v`). Nicht an einem echten Parkvorgang geprüft sind:
+
+- Treffer = Antwort mit Einfahrtszeit (`tariffTimeStart`) – so zeigt es die Web-App an
+- Betrag in Cent (`amount / 10^currencyDecimal`) – ebenso aus der Web-App
+- Bezahl-Link mit vorausgefülltem Parkhaus und Kennzeichen (`/parking/select?country=…&city=…&parking=…&lpn=…`)
 
 ## Betrieb
 
