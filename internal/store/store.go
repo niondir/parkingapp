@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS recent_cities (
+	chat_id INTEGER NOT NULL,
+	city    TEXT    NOT NULL,
+	used_at INTEGER NOT NULL,
+	PRIMARY KEY (chat_id, city)
+);
 CREATE TABLE IF NOT EXISTS plate_info (
 	plate    TEXT PRIMARY KEY,
 	quota_id INTEGER NOT NULL,
@@ -157,6 +163,8 @@ type column struct{ name, def string }
 // columns added after the first release
 var addedColumns = map[string][]column{
 	"plates": plateColumns,
+	// Smart Web Pay searches one city per chat; '' = none set.
+	"chat_settings": {{"swp_city", "TEXT NOT NULL DEFAULT ''"}},
 	"sessions": {
 		{"exited_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"outcome", "TEXT NOT NULL DEFAULT ''"},
@@ -343,6 +351,78 @@ func (s *Store) SetChatSettings(ctx context.Context, chatID int64, cs ChatSettin
 		 ON CONFLICT (chat_id) DO UPDATE SET quiet_from = excluded.quiet_from, quiet_to = excluded.quiet_to`,
 		chatID, cs.QuietFrom, cs.QuietTo)
 	return err
+}
+
+// City returns the Smart Web Pay city of a chat (” = none).
+func (s *Store) City(ctx context.Context, chatID int64) (string, error) {
+	var c string
+	err := s.db.QueryRowContext(ctx, `SELECT swp_city FROM chat_settings WHERE chat_id = ?`, chatID).Scan(&c)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return c, err
+}
+
+// maxRecentCities is the length of the quick selection.
+const maxRecentCities = 10
+
+// SetCity sets the Smart Web Pay city of a chat (” = none) and keeps it in
+// the quick selection.
+func (s *Store) SetCity(ctx context.Context, chatID int64, city string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO chat_settings (chat_id, swp_city) VALUES (?, ?)
+		 ON CONFLICT (chat_id) DO UPDATE SET swp_city = excluded.swp_city`, chatID, city); err != nil {
+		return err
+	}
+	if city != "" {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO recent_cities (chat_id, city, used_at) VALUES (?, ?, ?)
+			 ON CONFLICT (chat_id, city) DO UPDATE SET used_at = excluded.used_at`, chatID, city, time.Now().UnixNano()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM recent_cities WHERE chat_id = ? AND city NOT IN
+			 (SELECT city FROM recent_cities WHERE chat_id = ? ORDER BY used_at DESC LIMIT ?)`,
+			chatID, chatID, maxRecentCities); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// RecentCities returns the last cities of a chat, most recent first.
+func (s *Store) RecentCities(ctx context.Context, chatID int64) ([]string, error) {
+	return s.strings(ctx, `SELECT city FROM recent_cities WHERE chat_id = ? ORDER BY used_at DESC`, chatID)
+}
+
+// WatchedCities returns the Smart Web Pay cities of all chats watching a
+// plate without pausing it.
+func (s *Store) WatchedCities(ctx context.Context, plate string) ([]string, error) {
+	return s.strings(ctx,
+		`SELECT DISTINCT c.swp_city FROM plates p JOIN chat_settings c ON c.chat_id = p.chat_id
+		 WHERE p.plate = ? AND p.paused = 0 AND c.swp_city != '' ORDER BY c.swp_city`, plate)
+}
+
+func (s *Store) strings(ctx context.Context, q string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		res = append(res, v)
+	}
+	return res, rows.Err()
 }
 
 // OpenSessions returns the sessions of a plate that are not closed yet.

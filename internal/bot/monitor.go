@@ -11,6 +11,7 @@ import (
 
 	"github.com/niondir/parkingapp/internal/fairparken"
 	"github.com/niondir/parkingapp/internal/store"
+	"github.com/niondir/parkingapp/internal/telegram"
 )
 
 // pollStats are shown to admins with /stats.
@@ -54,21 +55,17 @@ func (b *Bot) pollAll(ctx context.Context) {
 			case <-time.After(b.cfg.RequestGap):
 			}
 		}
-		res, err := b.fp.Search(ctx, plate)
-		b.statsMu.Lock()
-		b.stats.Searches++
+		cities, err := b.store.WatchedCities(ctx, plate)
 		if err != nil {
-			b.stats.Errors++
-			b.stats.LastError = time.Now().In(berlin).Format("02.01. 15:04") + " " + err.Error()
+			slog.Error("list cities", "plate", plate, "err", err)
 		}
-		b.statsMu.Unlock()
-		if err != nil {
-			// Don't touch the state on errors, otherwise open sessions would be reported as closed.
-			slog.Warn("search", "plate", plate, "err", err)
+		sr := b.searchAll(ctx, plate, cities)
+		if sr.allFailed() {
 			failed++
 			continue
 		}
-		if err := b.process(ctx, plate, res, 0); err != nil {
+		// Sessions of sources that failed stay untouched, otherwise they would be reported as closed.
+		if err := b.process(ctx, plate, sr.res, sr.checked, 0); err != nil {
 			slog.Error("process", "plate", plate, "err", err)
 		}
 	}
@@ -105,9 +102,10 @@ func (b *Bot) pingHealth(ctx context.Context, ok bool) {
 }
 
 // process compares a fresh search result with the stored state and notifies
-// all subscribers about new and finished sessions. The chat skipChat already
-// got the result as a direct answer and gets no push for new sessions.
-func (b *Bot) process(ctx context.Context, plate string, res []fairparken.SearchResult, skipChat int64) error {
+// all subscribers about new and finished sessions. Only sessions of checked
+// sources (see source) can finish. The chat skipChat already got the result
+// as a direct answer and gets no push for new sessions.
+func (b *Bot) process(ctx context.Context, plate string, res []fairparken.SearchResult, checked map[string]bool, skipChat int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -141,13 +139,13 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 			slog.Info("new session", "plate", plate, "key", key)
 			b.notify(ctx, "push:new", plate, skipChat, nil, func(p store.Plate) string {
 				return "🅿️ <b>Neuer Parkvorgang erkannt</b>\n\n" + fmtResult(r, p.Label, now, grace)
-			}, true)
+			}, itemKeyboard(plate, &it))
 		case reopened:
 			// It was reported as finished, but the API returns it again.
 			slog.Warn("session reappeared", "plate", plate, "key", key)
 			b.notify(ctx, "push:reopened", plate, 0, nil, func(p store.Plate) string {
 				return "⚠️ <b>Korrektur:</b> Der Parkvorgang ist doch noch offen.\n\n" + fmtResult(r, p.Label, now, grace)
-			}, true)
+			}, itemKeyboard(plate, &it))
 		}
 		s, had := prev[key]
 		var old fairparken.ParkingItem
@@ -168,7 +166,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 			if it.Price != nil && *it.Price > 0 {
 				b.notify(ctx, "push:exit", plate, 0, nil, func(p store.Plate) string {
 					return "🚙 <b>Ausfahrt erkannt</b> – es ist noch eine Gebühr offen.\n\n" + fmtResult(r, p.Label, now, grace)
-				}, true)
+				}, itemKeyboard(plate, &it))
 			}
 		}
 		// Alerts compare the state of the last check with now. A new session
@@ -186,6 +184,11 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		if seen[s.Key] {
 			continue
 		}
+		var it fairparken.ParkingItem
+		_ = json.Unmarshal([]byte(s.Item), &it)
+		if !checked[source(it)] {
+			continue
+		}
 		// One empty answer may be a hiccup or the backend processing the exit.
 		n, err := b.store.MarkMissing(ctx, plate, s.Key)
 		if err != nil {
@@ -194,8 +197,6 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		if n < missingToClose {
 			continue
 		}
-		var it fairparken.ParkingItem
-		_ = json.Unmarshal([]byte(s.Item), &it)
 		ci := closeOutcome(s, it, now, grace)
 		outcome := ci.outcome
 		if err := b.store.CloseSession(ctx, plate, s.Key, outcome); err != nil {
@@ -204,7 +205,7 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 		slog.Info("session gone", "plate", plate, "key", s.Key, "outcome", outcome)
 		b.notify(ctx, "push:closed", plate, 0, nil, func(p store.Plate) string {
 			return fmtClosed(it, p.Label, ci)
-		}, false)
+		}, nil)
 	}
 	return nil
 }
@@ -229,6 +230,19 @@ func closeOutcome(s store.Session, it fairparken.ParkingItem, now time.Time, gra
 		ci.min, ci.max = last.Sub(in), gone.Sub(in)
 	}
 	paidPrice := it.Price != nil && *it.Price > 0
+	if it.Provider != "" {
+		// Car parks with barriers: a car leaves after paying or for free. The
+		// grace period is fair parken's and says nothing here.
+		ci.outcome = store.OutcomeNoFee
+		if paidPrice {
+			ci.outcome = store.OutcomePaid
+		}
+		if !s.ExitedAt.IsZero() && okIn {
+			ci.min = s.ExitedAt.Sub(in)
+			ci.max = ci.min
+		}
+		return ci
+	}
 	switch {
 	case !s.ExitedAt.IsZero():
 		if okIn {
@@ -303,7 +317,7 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 		return p.PriceLimit > 0 && it.Price != nil && oldPrice < p.PriceLimit && newPrice >= p.PriceLimit
 	}, func(p store.Plate) string {
 		return fmt.Sprintf("💸 <b>Preisalarm</b>: Die Gebühr hat %s erreicht.\n\n%s", fmtEuro(p.PriceLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
-	}, true)
+	}, itemKeyboard(plate, &it))
 
 	if !isNew && it.Price != nil && old.Price != nil && newPrice > oldPrice {
 		b.notify(ctx, "push:price-change", plate, 0, func(p store.Plate) bool {
@@ -311,20 +325,23 @@ func (b *Bot) checkAlerts(ctx context.Context, plate string, it, old fairparken.
 			return p.PriceChange && !(p.PriceLimit > 0 && oldPrice < p.PriceLimit && newPrice >= p.PriceLimit)
 		}, func(p store.Plate) string {
 			return fmt.Sprintf("📈 Gebühr für %s gestiegen: %s → <b>%s</b>", plateTitle(plate, p.Label), fmtEuro(oldPrice), fmtEuro(newPrice))
-		}, true)
+		}, itemKeyboard(plate, &it))
 	}
 
 	b.notify(ctx, "push:duration-alarm", plate, 0, func(p store.Plate) bool {
 		return p.DurationLimit > 0 && oldDur < p.DurationLimit && newDur >= p.DurationLimit
 	}, func(p store.Plate) string {
 		return fmt.Sprintf("⏱ <b>Parkdauer-Alarm</b>: %s parkt seit über %s.\n\n%s", plateTitle(plate, p.Label), fmtDuration(p.DurationLimit), fmtItem(it, p.Label, now, b.grace(ctx)))
-	}, true)
+	}, itemKeyboard(plate, &it))
 }
 
 // maybeRemind warns when a session is still unpaid shortly before the online
 // payment window (48 h after leaving) closes, once per entry of
 // cfg.RemindBefore. Only sessions with a confirmed exit are affected.
 func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.ParkingItem, open []store.Session) {
+	if it.Provider != "" {
+		return // the 48 h window is fair parken's
+	}
 	for _, s := range open {
 		if s.Key != key || s.ExitedAt.IsZero() {
 			continue
@@ -353,7 +370,7 @@ func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.
 			return fmt.Sprintf("⚠️ <b>Noch nicht bezahlt</b> – nur noch ca. %s bis %s.\n"+
 				"Danach fragt fair parken den Halter ab und schickt eine Zahlungsaufforderung mit Vertragsstrafe (Höhe laut Schild am Parkplatz).\n\n%s",
 				fmtDuration(left), fmtTime(deadline), fmtItem(it, p.Label, time.Now(), b.grace(ctx)))
-		}, true)
+		}, itemKeyboard(plate, &it))
 		return
 	}
 }
@@ -361,7 +378,7 @@ func (b *Bot) maybeRemind(ctx context.Context, plate, key string, it fairparken.
 // notify pushes a message to every subscriber of a plate that hasn't paused
 // it and passes filter (nil = all). During quiet hours pushes are silent.
 func (b *Bot) notify(ctx context.Context, kind, plate string, skipChat int64, filter func(store.Plate) bool,
-	text func(store.Plate) string, withButtons bool) {
+	text func(store.Plate) string, k *telegram.InlineKeyboard) {
 	subs, err := b.store.Subscribers(ctx, plate)
 	if err != nil {
 		slog.Error("subscribers", "plate", plate, "err", err)
@@ -372,13 +389,7 @@ func (b *Bot) notify(ctx context.Context, kind, plate string, skipChat int64, fi
 			continue
 		}
 		silent := b.quiet(ctx, s.ChatID, time.Now())
-		var err error
-		if withButtons {
-			err = b.tg.Push(ctx, s.ChatID, text(s), itemKeyboard(plate), silent)
-		} else {
-			err = b.tg.Push(ctx, s.ChatID, text(s), nil, silent)
-		}
-		if err != nil {
+		if err := b.tg.Push(ctx, s.ChatID, text(s), k, silent); err != nil {
 			slog.Warn("send push", "chat", s.ChatID, "plate", plate, "err", err)
 			continue
 		}

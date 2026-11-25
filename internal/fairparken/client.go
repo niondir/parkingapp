@@ -38,6 +38,14 @@ type ParkingItem struct {
 	QuotaAddition string   `json:"quotaAddition"` // e.g. the shop at the car park
 	HasVoucher    bool     `json:"hasVoucher"`    // the area accepts voucher codes (assumed)
 
+	// Set for sessions of another provider that the bot maps onto this type,
+	// so monitor, alerts and history treat all providers alike. fair parken
+	// itself never sends these fields.
+	Provider string `json:"provider,omitempty"` // e.g. "swp"; empty = fair parken
+	ParkID   string `json:"parkId,omitempty"`   // car park of the provider
+	City     string `json:"city,omitempty"`     // city the provider was searched in
+	PayLink  string `json:"payLink,omitempty"`  // payment page of the provider
+
 	// Raw keeps all fields as returned by the API, so unknown fields survive
 	// a round trip through Quote.
 	Raw json.RawMessage `json:"-"`
@@ -54,6 +62,9 @@ func (p *ParkingItem) UnmarshalJSON(b []byte) error {
 
 // Key identifies a parking session.
 func (p ParkingItem) Key() string {
+	if p.Provider != "" {
+		return p.Provider + "|" + p.ParkID + "|" + p.RealUTCIn
+	}
 	return fmt.Sprintf("%d|%d|%s", p.AreaGkz, p.QuotaID, p.RealUTCIn)
 }
 

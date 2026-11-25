@@ -18,6 +18,7 @@ import (
 	"github.com/niondir/parkingapp/internal/bot"
 	"github.com/niondir/parkingapp/internal/fairparken"
 	"github.com/niondir/parkingapp/internal/store"
+	"github.com/niondir/parkingapp/internal/swp"
 	"github.com/niondir/parkingapp/internal/telegram"
 )
 
@@ -67,7 +68,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	slog.Info("starting", "poll", cfg.PollInterval, "admins", len(cfg.Admins), "healthcheck", cfg.HealthcheckURL != "", "allowed_users", len(cfg.AllowedUsers), "db", dbPath)
-	return bot.New(cfg, telegram.New(token), fairparken.New(), st).Run(ctx)
+	return bot.New(cfg, telegram.New(token), fairparken.New(), swp.New(), st).Run(ctx)
 }
 
 func envIDs(key string) (map[int64]bool, error) {

@@ -69,6 +69,7 @@ const (
 	inGrace
 	inFeedback
 	inFeedbackReply
+	inCity
 )
 
 const inputTimeout = 15 * time.Minute
@@ -233,6 +234,8 @@ func (b *Bot) handleInput(ctx context.Context, chatID int64, p *pending, text st
 		}
 	case inBroadcastConfirm:
 		b.retry(ctx, chatID, "Bitte mit „Senden“ bestätigen.")
+	case inCity:
+		b.handleCityInput(ctx, chatID, text, true)
 	}
 }
 
@@ -252,7 +255,7 @@ func (b *Bot) finishAdd(ctx context.Context, chatID int64, plate, label string) 
 
 func (b *Bot) sendWelcome(ctx context.Context, chatID int64) {
 	if _, err := b.tg.SendMsg(ctx, chatID,
-		"👋 Hallo! Ich melde mich, sobald für deine Kennzeichen ein Parkvorgang auf einem fair-parken-Parkplatz erkannt wird.\n\nAlles geht über die Buttons – unten findest du jederzeit „"+menuButton+"“.",
+		"👋 Hallo! Ich melde mich, sobald für deine Kennzeichen ein Parkvorgang auf einem fair-parken-Parkplatz erkannt wird – und in Parkhäusern mit Smart Web Pay, wenn du unter „📍 Stadt setzen“ deine Stadt wählst.\n\nAlles geht über die Buttons – unten findest du jederzeit „"+menuButton+"“.",
 		replyKeyboard); err != nil {
 		slog.Warn("send welcome", "chat", chatID, "err", err)
 	}
@@ -283,7 +286,8 @@ func (b *Bot) showMain(ctx context.Context, chatID, msgID int64) {
 	k := kb(
 		row(btn("🚗 Meine Kennzeichen", "ml"), btn("➕ Hinzufügen", "add")),
 		row(btn("🔄 Jetzt prüfen", "chk"), btn("🔔 Alarme", "al")),
-		row(btn("📒 Verlauf", "hist"), btn("🧾 Kassenzettel", "rc")),
+		row(btn("📒 Verlauf", "hist"), b.cityButton(ctx, chatID)),
+		row(btn("🧾 Kassenzettel", "rc")),
 		row(btn("💬 Feedback", "fb"), btn("❓ Hilfe", "help")),
 	)
 	if b.isAdmin(chatID) {
@@ -404,7 +408,7 @@ func (b *Bot) showPlate(ctx context.Context, chatID, msgID int64, plate string) 
 	}
 	text := "🚗 " + plateTitle(p.Plate, p.Label) + "\n" + plateSummary(p)
 	b.show(ctx, chatID, msgID, text, kb(
-		row(btn("🔄 Prüfen", "c:"+p.Plate), telegram.InlineButton{Text: "💳 Bezahlen", URL: fairparken.PayURL(p.Plate)}),
+		row(btn("🔄 Prüfen", "c:"+p.Plate), telegram.InlineButton{Text: "💳 Bezahlen", URL: b.payURL(ctx, p.Plate)}),
 		row(btn("🔔 Alarme", "al:"+p.Plate)),
 		row(btn("🏷 Tarife", "t:"+p.Plate), btn("🎟 Rabattcode", "v:"+p.Plate)),
 		row(btn("⚙️ Einstellungen", "s:"+p.Plate), btn("📒 Verlauf", "hist:"+p.Plate)),
@@ -635,6 +639,12 @@ func (b *Bot) handleMenuCallback(ctx context.Context, chatID, msgID int64, kind,
 		b.ask(ctx, chatID, inQuiet, arg, "", "🌙 Von wann bis wann? Z. B. <code>22-7</code>")
 	case "chk":
 		b.cmdCheck(ctx, chatID, "")
+	case "cty":
+		b.showCity(ctx, chatID, msgID, "")
+	case "cti":
+		b.askCity(ctx, chatID)
+	case "cs":
+		b.setCity(ctx, chatID, msgID, arg)
 	case "hist":
 		b.cmdHistory(ctx, chatID, arg)
 	case "rc":
