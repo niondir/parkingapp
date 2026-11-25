@@ -104,13 +104,16 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time, grace time.D
 		}
 		b.WriteString("\n")
 	}
-	if parked {
+	switch {
+	case it.Provider != "":
+		// Grace period and payment windows are fair parken's rules.
+	case parked:
 		if free := in.Add(grace); okIn && grace > 0 && at.Before(free) {
 			fmt.Fprintf(&b, "ℹ️ Kostenlos, wenn du bis %s ausfährst (Karenzzeit %s).\n", free.In(berlin).Format("15:04"), fmtDuration(grace))
 		} else {
 			fmt.Fprintf(&b, "ℹ️ Nach dem Bezahlen hast du %s zum Ausfahren.\n", fmtDuration(PayExitWindow))
 		}
-	} else if okOut {
+	case okOut:
 		fmt.Fprintf(&b, "⌛ Online zahlbar bis ca. %s\n", fmtTime(out.Add(PayWindow)))
 	}
 	if it.HasVoucher {
@@ -134,13 +137,15 @@ func fmtClosed(it fairparken.ParkingItem, label string, ci closeInfo) string {
 	if ci.max-ci.min >= time.Minute {
 		dur = fmtDuration(ci.min) + " bis " + fmtDuration(ci.max)
 	}
-	switch ci.outcome {
-	case store.OutcomePaid:
+	switch {
+	case it.Provider != "" && ci.outcome == store.OutcomeNoFee:
+		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist (Parkdauer %s).", title, dur)
+	case ci.outcome == store.OutcomePaid:
 		fmt.Fprintf(&b, "✅ Parkvorgang von %s ist bezahlt.", title)
-	case store.OutcomePrepaid:
+	case ci.outcome == store.OutcomePrepaid:
 		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Bei einer Parkdauer von %s (länger als die Karenzzeit von %s) war laut AGB eine Zahlung fällig – also vermutlich vor der Ausfahrt bezahlt.",
 			title, dur, fmtDuration(ci.grace))
-	case store.OutcomeUncertain:
+	case ci.outcome == store.OutcomeUncertain:
 		fmt.Fprintf(&b, "✅ %s ist ausgefahren, ohne dass eine Gebühr offen ist. Parkdauer %s, also um die Karenzzeit (%s) herum – kostenlos oder vor der Ausfahrt bezahlt.",
 			title, dur, fmtDuration(ci.grace))
 	default:
@@ -177,9 +182,18 @@ func fmtResult(r fairparken.SearchResult, label string, at time.Time, grace time
 	return s
 }
 
-func itemKeyboard(plate string) *telegram.InlineKeyboard {
+// itemKeyboard has the buttons below a session; it opens the payment page
+// of the session's provider. Tariffs exist for fair parken only.
+func itemKeyboard(plate string, it *fairparken.ParkingItem) *telegram.InlineKeyboard {
+	pay := fairparken.PayURL(plate)
+	second := []telegram.InlineButton{{Text: "🔄 Aktualisieren", CallbackData: "c:" + plate}}
+	if it != nil && it.PayLink != "" {
+		pay = it.PayLink
+	} else {
+		second = append(second, telegram.InlineButton{Text: "🏷 Tarife", CallbackData: "t:" + plate})
+	}
 	return &telegram.InlineKeyboard{InlineKeyboard: [][]telegram.InlineButton{
-		{{Text: "💳 Jetzt bezahlen", URL: fairparken.PayURL(plate)}},
-		{{Text: "🔄 Aktualisieren", CallbackData: "c:" + plate}, {Text: "🏷 Tarife", CallbackData: "t:" + plate}},
+		{{Text: "💳 Jetzt bezahlen", URL: pay}},
+		second,
 	}}
 }

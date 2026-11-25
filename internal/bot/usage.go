@@ -59,7 +59,7 @@ func (b *Bot) textFeature(chatID int64, text string) string {
 var inputNames = map[inputKind]string{
 	inAdd: "add", inLabel: "label", inRename: "rename", inVoucher: "voucher", inPrice: "price",
 	inDuration: "duration", inQuiet: "quiet", inBroadcast: "broadcast", inBroadcastConfirm: "broadcast",
-	inGrace: "grace", inFeedback: "feedback", inFeedbackReply: "feedback-reply",
+	inGrace: "grace", inFeedback: "feedback", inFeedbackReply: "feedback-reply", inCity: "city",
 }
 
 // featureLabels groups commands, buttons and inputs that belong to the same feature.
@@ -76,6 +76,7 @@ var featureLabels = map[string]string{
 	"/rabatt": "Rabattcode", "btn:v": "Rabattcode", "input:voucher": "Rabattcode",
 	"/verlauf": "Verlauf", "btn:hist": "Verlauf",
 	"/kassenzettel": "Kassenzettel", "btn:rc": "Kassenzettel",
+	"/stadt": "Stadt", "btn:cty": "Stadt", "btn:cti": "Stadt", "btn:cs": "Stadt", "input:city": "Stadt",
 	"/einstellungen": "Einstellungen", "btn:s": "Einstellungen", "btn:sp": "Pausieren",
 	"btn:sr": "Frist-Erinnerung umschalten", "btn:alr": "Frist-Erinnerung umschalten",
 	"btn:sc": "Preiserhöhungen umschalten", "btn:alc": "Preiserhöhungen umschalten",

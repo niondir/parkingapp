@@ -442,7 +442,7 @@ func (b *Bot) cmdVoucher(ctx context.Context, chatID int64, args string) {
 				msg += "\n\nDer Code ändert den Preis nicht (ungültig oder nicht für diesen Parkplatz)."
 			}
 			msg += "\n\nDen Code beim Bezahlen auf der Bezahlseite eingeben."
-			b.reply(ctx, chatID, msg, itemKeyboard(p.Plate))
+			b.reply(ctx, chatID, msg, itemKeyboard(p.Plate, &it))
 		}
 	}
 	if !found {

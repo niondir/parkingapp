@@ -3,6 +3,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,6 +46,7 @@ type Bot struct {
 	cfg   Config
 	tg    messenger
 	fp    *fairparken.Client
+	swp   swpAPI // nil = Smart Web Pay off
 	store *store.Store
 	mu    sync.Mutex // serializes state changes of the monitor
 
@@ -60,8 +62,8 @@ type Bot struct {
 	users   map[int64]telegram.User // last known name per user, for feedback
 }
 
-func New(cfg Config, tg messenger, fp *fairparken.Client, st *store.Store) *Bot {
-	return &Bot{cfg: cfg, tg: tg, fp: fp, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}, clock: time.Now,
+func New(cfg Config, tg messenger, fp *fairparken.Client, sw swpAPI, st *store.Store) *Bot {
+	return &Bot{cfg: cfg, tg: tg, fp: fp, swp: sw, store: st, stats: pollStats{Started: time.Now()}, pend: map[int64]*pending{}, clock: time.Now,
 		users: map[int64]telegram.User{}}
 }
 
@@ -75,6 +77,7 @@ var commands = []telegram.BotCommand{
 	{Command: "bezahlen", Description: "Link zur Bezahlseite"},
 	{Command: "verlauf", Description: "Letzte Parkvorgänge und Kosten"},
 	{Command: "einstellungen", Description: "Benachrichtigungen und Alarme"},
+	{Command: "stadt", Description: "Stadt für Parkhäuser mit Smart Web Pay"},
 	{Command: "rabatt", Description: "Preis mit Rabattcode: /rabatt CODE"},
 	{Command: "kassenzettel", Description: "Vertragsstrafe mit Kassenzettel anfechten"},
 	{Command: "feedback", Description: "Feedback, Fehler oder Ideen schicken"},
@@ -237,6 +240,8 @@ func (b *Bot) handleText(ctx context.Context, chatID int64, text string) {
 		b.cmdVoucher(ctx, chatID, args)
 	case "/kassenzettel":
 		b.cmdReceipt(ctx, chatID)
+	case "/stadt", "/city":
+		b.cmdCity(ctx, chatID, args)
 	case "/feedback":
 		if args == "" {
 			b.askFeedback(ctx, chatID)
@@ -407,14 +412,15 @@ func (b *Bot) cmdCheck(ctx context.Context, chatID int64, args string) {
 		b.reply(ctx, chatID, "Noch keine Kennzeichen. Hinzufügen mit <code>/add HH-AB123 Name</code> – oder schick mir einfach ein Kennzeichen.", nil)
 		return
 	}
+	city, cities := b.checkCities(ctx, chatID, len(plates))
 	for _, p := range plates {
 		if !validPlate(p.Plate) {
 			b.reply(ctx, chatID, "Ungültiges Kennzeichen.", nil)
 			continue
 		}
-		res, err := b.fp.Search(ctx, p.Plate)
-		if err != nil {
-			b.fail(ctx, chatID, "Abfrage für "+p.Plate, err)
+		sr := b.searchAll(ctx, p.Plate, cities)
+		if sr.allFailed() {
+			b.fail(ctx, chatID, "Abfrage für "+p.Plate, errors.New(strings.Join(sr.failed, ", ")))
 			continue
 		}
 		watched, err := b.store.HasPlate(ctx, chatID, p.Plate)
@@ -424,26 +430,84 @@ func (b *Bot) cmdCheck(ctx context.Context, chatID int64, args string) {
 		}
 		if watched {
 			// Keep the monitor state in sync, so this session isn't pushed again.
-			if err := b.process(ctx, p.Plate, res, chatID); err != nil {
+			if err := b.process(ctx, p.Plate, sr.res, sr.checked, chatID); err != nil {
 				slog.Error("process", "plate", p.Plate, "err", err)
 			}
 		}
-		if len(res) == 0 {
-			var kb *telegram.InlineKeyboard
+		addRow := []telegram.InlineButton{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}}
+		warn := ""
+		if len(sr.failed) > 0 {
+			warn = "\n⚠️ Nicht erreichbar: " + esc(strings.Join(sr.failed, ", ")) + "."
+		}
+		if len(sr.res) == 0 {
+			k := kb(cityRow(city))
 			if !watched {
-				kb = &telegram.InlineKeyboard{InlineKeyboard: [][]telegram.InlineButton{{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}}}}
+				k.InlineKeyboard = append(k.InlineKeyboard, addRow)
 			}
-			b.reply(ctx, chatID, "✔️ "+plateTitle(p.Plate, p.Label)+": kein offener Parkvorgang.", kb)
+			b.reply(ctx, chatID, "✔️ "+plateTitle(p.Plate, p.Label)+": kein offener Parkvorgang.\n<i>Gesucht bei "+
+				whereSearched(city, len(cities))+".</i>"+warn, k)
 			continue
 		}
-		for _, r := range res {
-			kb := itemKeyboard(p.Plate)
-			if !watched {
-				kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "➕ Überwachen", CallbackData: "a:" + p.Plate}})
+		for _, r := range sr.res {
+			it := r.AnprResult
+			k := itemKeyboard(p.Plate, &it)
+			if it.Provider != "" && city == "" {
+				// Found while searching all cities: offer to keep that city.
+				k.InlineKeyboard = append(k.InlineKeyboard, row(btn("📍 "+it.City+" als Stadt setzen", "cs:"+it.City)))
 			}
-			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label, time.Now(), b.grace(ctx)), kb)
+			if !watched {
+				k.InlineKeyboard = append(k.InlineKeyboard, addRow)
+			}
+			b.reply(ctx, chatID, "🅿️ <b>Offener Parkvorgang</b>\n\n"+fmtResult(r, p.Label, time.Now(), b.grace(ctx))+warn, k)
 		}
 	}
+}
+
+// checkCities returns the Smart Web Pay cities a manual check searches: the
+// chat's city, or all cities if none is set.
+func (b *Bot) checkCities(ctx context.Context, chatID int64, plates int) (city string, cities []string) {
+	if b.swp == nil {
+		return "", nil
+	}
+	city, err := b.store.City(ctx, chatID)
+	if err != nil {
+		slog.Error("load city", "chat", chatID, "err", err)
+	}
+	if city != "" {
+		return city, []string{city}
+	}
+	all, err := b.swpCityNames(ctx)
+	if err != nil {
+		slog.Warn("swp cities", "err", err)
+		return "", nil
+	}
+	b.reply(ctx, chatID, fmt.Sprintf("⏳ Keine Stadt gesetzt – ich suche %s zusätzlich in allen %d Smart-Web-Pay-Städten. Das dauert etwas. Mit einer Stadt geht es schneller.",
+		map[bool]string{true: "das Kennzeichen", false: "die Kennzeichen"}[plates == 1], len(all)), nil)
+	return "", all
+}
+
+// fairparkenOnly marks a search that asked fair parken alone.
+var fairparkenOnly = map[string]bool{"": true}
+
+// payURL opens the payment page for a plate: of the open Smart Web Pay
+// session if there is one, otherwise fair parken's.
+func (b *Bot) payURL(ctx context.Context, plate string) string {
+	open, err := b.store.OpenSessions(ctx, plate)
+	if err != nil {
+		slog.Warn("open sessions", "plate", plate, "err", err)
+	}
+	var link string
+	var last time.Time
+	for _, s := range open {
+		var it fairparken.ParkingItem
+		if json.Unmarshal([]byte(s.Item), &it) == nil && it.PayLink != "" && s.LastSeen.After(last) {
+			link, last = it.PayLink, s.LastSeen
+		}
+	}
+	if link != "" {
+		return link
+	}
+	return fairparken.PayURL(plate)
 }
 
 func (b *Bot) cmdPay(ctx context.Context, chatID int64, args string) {
@@ -458,7 +522,7 @@ func (b *Bot) cmdPay(ctx context.Context, chatID int64, args string) {
 	}
 	kb := &telegram.InlineKeyboard{}
 	for _, p := range plates {
-		kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "💳 " + p.Plate, URL: fairparken.PayURL(p.Plate)}})
+		kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{{Text: "💳 " + p.Plate, URL: b.payURL(ctx, p.Plate)}})
 	}
 	b.reply(ctx, chatID, "Bezahlseite öffnen (Kennzeichen ist vorausgefüllt, dort auf „Weiter“ tippen):", kb)
 }
@@ -486,7 +550,7 @@ func (b *Bot) cmdTariffs(ctx context.Context, chatID int64, args string) {
 			continue
 		}
 		if watched, err := b.store.HasPlate(ctx, chatID, p.Plate); err == nil && watched {
-			if err := b.process(ctx, p.Plate, res, chatID); err != nil {
+			if err := b.process(ctx, p.Plate, res, fairparkenOnly, chatID); err != nil {
 				slog.Error("process", "plate", p.Plate, "err", err)
 			}
 		}
@@ -564,7 +628,7 @@ func (b *Bot) showTariffs(ctx context.Context, chatID int64, quotaID int64, addr
 	}
 	var kb *telegram.InlineKeyboard
 	if item != nil {
-		kb = itemKeyboard(item.Plate)
+		kb = itemKeyboard(item.Plate, item)
 	}
 	b.reply(ctx, chatID, sb.String(), kb)
 }
