@@ -326,3 +326,48 @@ func TestWatchedCitiesSkipsPaused(t *testing.T) {
 		t.Fatalf("cities %v err %v", c, err)
 	}
 }
+
+// Paying while parked moves tariffTimeStart to the end of the paid time; it
+// stays the same visit.
+func TestSWPPaidWhileParked(t *testing.T) {
+	ctx := context.Background()
+	b, tg, _, sw := setupSWP(t)
+	b.handleText(ctx, 1, "/add HHKF860E")
+	b.setCity(ctx, 1, 0, "Hamburg")
+	in := time.Now().Add(-40 * time.Minute)
+	sw.set("Hamburg", "HHKF860E", krohnstieg(in, "150"))
+	b.pollAll(ctx)
+	tg.take()
+
+	sw.set("Hamburg", "HHKF860E", krohnstieg(in.Add(time.Hour), "0"))
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("paying looked like a new or finished session: %v", m)
+	}
+	open, _ := b.store.OpenSessions(ctx, "HHKF860E")
+	if len(open) != 1 {
+		t.Fatalf("want one open session: %+v", open)
+	}
+
+	press(b, 1, 0, "c:HHKF860E")
+	m := tg.take()
+	text := m[len(m)-1].text
+	for _, want := range []string{"Einfahrt: " + fmtTime(in), "Parkt seit: 40 min", "0,00 €", "Bezahlt bis " + in.Add(time.Hour).In(berlin).Format("15:04")} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %s", want, text)
+		}
+	}
+
+	// A later visit at the same car park is a new session.
+	sw.set("Hamburg", "HHKF860E")
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	tg.take()
+	sw.set("Hamburg", "HHKF860E", krohnstieg(time.Now().Add(-5*time.Minute), "0"))
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "Neuer Parkvorgang") {
+		t.Fatalf("second visit: %v", m)
+	}
+}
