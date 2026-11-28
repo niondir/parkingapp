@@ -275,19 +275,34 @@ func TestBroadcastFlow(t *testing.T) {
 	b.handleText(ctx, 1, "/add HHKF860E")
 	tg.take()
 
+	// Admin functions sit behind one button of the main menu.
 	b.handle(ctx, msg(100, "/menu"))
-	if m := tg.take(); !has(buttons(m[0]), "ab") {
-		t.Fatalf("admin menu: %v", buttons(m[0]))
+	if m := tg.take(); !has(buttons(m[0]), "adm") || has(buttons(m[0]), "ab") {
+		t.Fatalf("main menu: %v", buttons(m[0]))
+	}
+	b.handle(ctx, click(100, "adm"))
+	m := tg.take()
+	for _, want := range []string{"fba", "au", "as", "us:30", "ab", "gr", "m"} {
+		if !has(buttons(m[0]), want) {
+			t.Fatalf("admin menu %v: missing %s", buttons(m[0]), want)
+		}
 	}
 	b.handle(ctx, msg(1, "/menu"))
-	if m := tg.take(); has(buttons(m[0]), "ab") {
-		t.Fatal("admin buttons for normal user")
+	if m := tg.take(); has(buttons(m[0]), "adm") {
+		t.Fatal("admin button for normal user")
+	}
+	b.handle(ctx, click(1, "adm"))
+	b.handle(ctx, msg(1, "/admin"))
+	for _, m := range tg.take() {
+		if has(buttons(m), "ab") {
+			t.Fatal("admin menu for normal user")
+		}
 	}
 
 	b.handle(ctx, click(100, "ab"))
 	tg.take()
 	b.handle(ctx, msg(100, "Wartung"))
-	m := tg.take()
+	m = tg.take()
 	if len(m) != 2 || !strings.Contains(m[1].text, "An 2 Chats senden?") || !has(buttons(m[1]), "abx") {
 		t.Fatalf("preview: %+v", m)
 	}

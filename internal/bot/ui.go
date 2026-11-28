@@ -227,10 +227,11 @@ func (b *Bot) handleInput(ctx context.Context, chatID int64, p *pending, text st
 			b.endPending(ctx, chatID, "")
 			return
 		}
-		id, err := strconv.ParseInt(p.data, 10, 64)
+		idStr, mode, _ := strings.Cut(p.data, ":")
+		id, err := strconv.ParseInt(idStr, 10, 64)
 		b.endPending(ctx, chatID, "")
 		if err == nil {
-			b.saveFeedbackReply(ctx, chatID, id, text)
+			b.saveFeedbackReply(ctx, chatID, id, text, mode == "done")
 		}
 	case inBroadcastConfirm:
 		b.retry(ctx, chatID, "Bitte mit „Senden“ bestätigen.")
@@ -291,13 +292,7 @@ func (b *Bot) showMain(ctx context.Context, chatID, msgID int64) {
 		row(btn("💬 Feedback", "fb"), btn("❓ Hilfe", "help")),
 	)
 	if b.isAdmin(chatID) {
-		inbox := "📥 Feedback"
-		if n, err := b.store.CountOpenFeedback(ctx); err == nil && n > 0 {
-			inbox = fmt.Sprintf("📥 Feedback (%d)", n)
-		}
-		k.InlineKeyboard = append(k.InlineKeyboard,
-			row(btn("👥 Nutzer", "au"), btn("📊 Statistik", "as"), btn("📈 Nutzung", "us:30")),
-			row(btn(inbox, "fba"), btn("📢 Rundnachricht", "ab"), btn("⏳ Karenzzeit", "gr")))
+		k.InlineKeyboard = append(k.InlineKeyboard, row(btn("🛠 Admin"+b.openFeedbackBadge(ctx), "adm")))
 	}
 	b.show(ctx, chatID, msgID, text, k)
 }

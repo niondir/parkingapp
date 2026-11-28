@@ -14,7 +14,7 @@ Alles geht über Buttons: `/start` blendet unten im Chat dauerhaft „🏠 Menü
 
 Braucht der Bot eine Eingabe (Kennzeichen, Name, Rabattcode, eigener Betrag), fragt er mit einem „✖️ Abbrechen“-Button und nimmt die nächste Nachricht als Antwort. Ungültige Eingaben fragt er erneut ab. Menü-Button oder ein Befehl brechen die Frage ab, nach 15 min verfällt sie. Alarme und Ruhezeit haben Schnellauswahl-Buttons.
 
-Admins sehen im Hauptmenü zusätzlich Nutzer, Statistik und Rundnachricht (mit Vorschau und Bestätigung).
+Admins haben im Hauptmenü einen Button „🛠 Admin“ (mit Zahl offener Feedbacks), dahinter Feedback, Nutzer, Statistik, Nutzung, Rundnachricht (mit Vorschau und Bestätigung) und Karenzzeit; auch über `/admin`.
 
 ## Befehle
 
@@ -37,7 +37,7 @@ Für alles gibt es auch Befehle:
 | `/ruhezeit 22-7` | Meldungen in der Zeit ohne Ton (`aus`) |
 | `/remove [Kennzeichen]` | Kennzeichen entfernen |
 | `/feedback [Text]` | Feedback schicken |
-| `/users`, `/allow ID`, `/block ID`, `/stats`, `/nutzung 30`, `/rundnachricht Text`, `/karenz 15` | nur Admins, siehe [Zugang](#zugang) |
+| `/admin`, `/users`, `/allow ID`, `/block ID`, `/stats`, `/nutzung 30`, `/rundnachricht Text`, `/karenz 15` | nur Admins, siehe [Zugang](#zugang) |
 
 Der Verlauf zeigt nur Parkvorgänge, die der Bot gesehen hat, nachdem der Nutzer das Kennzeichen hinzugefügt hat. Als Gebühr gilt der zuletzt gesehene Betrag.
 Pausierte Kennzeichen werden nicht abgefragt, solange niemand sonst sie aktiv überwacht.
@@ -69,7 +69,7 @@ Die SQLite-Datenbank liegt im Volume `data`. Konfiguration siehe `.env.example`.
 
 ## Feedback
 
-Nutzer schreiben über „💬 Feedback“ (oder `/feedback Text`) und sehen unter „Mein Feedback“ Status und Antworten. Admins bekommen jedes neue Feedback mit Buttons für den Status (🆕 neu, 🔧 in Arbeit, ✅ erledigt, 🚫 abgelehnt) und „💬 Antworten“; der Nutzer wird bei jeder Änderung benachrichtigt. Übersicht im Hauptmenü unter „📥 Feedback (n)“. Gespeichert in der Tabelle `feedback`.
+Nutzer schreiben über „💬 Feedback“ (oder `/feedback Text`) und sehen unter „Mein Feedback“ Status und Antworten. Admins bekommen jedes neue Feedback mit Buttons für den Status (🆕 neu, 🔧 in Arbeit, ✅ erledigt, 🚫 abgelehnt) „💬 Antworten“ und „✅ Antworten & erledigt“ (Antwort und Abschluss in einer Nachricht an den Nutzer); der Nutzer wird bei jeder Änderung benachrichtigt, außer ein Admin bearbeitet sein eigenes Feedback. Übersicht im Admin-Menü unter „📥 Feedback (n)“. Gespeichert in der Tabelle `feedback`.
 
 ## Nutzungsstatistik
 
@@ -139,7 +139,7 @@ Die Ausfahrt liegt zwischen der letzten Abfrage, die das Auto noch parkend geseh
 
 **AGB von fair parken** (in der Web-App unter `pay.fairparken.com/assets/agb/de.json`, Ziffer 3): Ausfahrt innerhalb von 15 min nach der Einfahrt ist kein Parkvorgang und kostenlos; nach einer Zahlung hat man 15 min zum Ausfahren; das Entgelt ist eigentlich vor der Ausfahrt am Automaten zu zahlen, ergänzend online bis 48 h nach der Ausfahrt. Danach folgen Halterabfrage und Zahlungsaufforderung mit Vertragsstrafe (Höhe laut Schild, zahlbar in 14 Tagen). Die AGB verweisen für die Nutzungsbedingungen auf die Schilder vor Ort; einzelne Parkplätze können abweichen. Der Bot erinnert standardmäßig 12 h und 2 h vor Ablauf der 48 h (`REMIND_BEFORE`).
 
-**Karenzzeit:** Admin-Einstellung im Hauptmenü („⏳ Karenzzeit“) oder `/karenz 15`, Standard aus `GRACE_PERIOD` (15 min). Sie gilt für alle Parkplätze; parkplatzspezifische Freiparkzeiten (z. B. länger mit Kassenbon) kennt der Bot nicht.
+**Karenzzeit:** Admin-Einstellung im Admin-Menü („⏳ Karenzzeit“) oder `/karenz 15`, Standard aus `GRACE_PERIOD` (15 min). Sie gilt für alle Parkplätze; parkplatzspezifische Freiparkzeiten (z. B. länger mit Kassenbon) kennt der Bot nicht.
 
 Damit eine einzelne abweichende Antwort nicht zu falschen Meldungen führt:
 
