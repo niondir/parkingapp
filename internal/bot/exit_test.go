@@ -263,7 +263,7 @@ func TestGraceAdmin(t *testing.T) {
 	b, tg, _ := setup(t)
 	b.cfg.Admins = map[int64]bool{100: true}
 
-	b.handle(ctx, msg(100, "/menu"))
+	b.handle(ctx, msg(100, "/admin"))
 	if m := tg.take(); !has(buttons(m[0]), "gr") {
 		t.Fatalf("admin menu: %v", buttons(m[0]))
 	}

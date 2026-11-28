@@ -14,6 +14,7 @@ import (
 )
 
 var adminCommands = []telegram.BotCommand{
+	{Command: "admin", Description: "Admin: Menü mit allen Admin-Funktionen"},
 	{Command: "users", Description: "Admin: Nutzer und Anfragen"},
 	{Command: "allow", Description: "Admin: Nutzer freischalten (/allow ID)"},
 	{Command: "block", Description: "Admin: Nutzer sperren (/block ID)"},
@@ -24,6 +25,28 @@ var adminCommands = []telegram.BotCommand{
 }
 
 func (b *Bot) isAdmin(userID int64) bool { return b.cfg.Admins[userID] }
+
+// adminBack leads from an admin screen back to the admin menu.
+func adminBack() telegram.InlineButton { return btn("⬅️ Admin", "adm") }
+
+// openFeedbackBadge is " (n)" with the number of open feedback, or "".
+func (b *Bot) openFeedbackBadge(ctx context.Context) string {
+	if n, err := b.store.CountOpenFeedback(ctx); err == nil && n > 0 {
+		return fmt.Sprintf(" (%d)", n)
+	}
+	return ""
+}
+
+// showAdminMenu bundles everything only admins can do.
+func (b *Bot) showAdminMenu(ctx context.Context, chatID, msgID int64) {
+	b.show(ctx, chatID, msgID, "🛠 <b>Admin</b>",
+		kb(
+			row(btn("📥 Feedback"+b.openFeedbackBadge(ctx), "fba"), btn("👥 Nutzer", "au")),
+			row(btn("📊 Statistik", "as"), btn("📈 Nutzung", "us:30")),
+			row(btn("📢 Rundnachricht", "ab"), btn("⏳ Karenzzeit", "gr")),
+			row(btn("⬅️ Hauptmenü", "m")),
+		))
+}
 
 func (b *Bot) open() bool { return len(b.cfg.Admins) == 0 && len(b.cfg.AllowedUsers) == 0 }
 
@@ -113,6 +136,8 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 	cmd, _, _ = strings.Cut(strings.ToLower(cmd), "@")
 	args = strings.TrimSpace(args)
 	switch cmd {
+	case "/admin":
+		b.showAdminMenu(ctx, chatID, 0)
 	case "/users":
 		b.cmdUsers(ctx, chatID)
 	case "/stats":
@@ -156,6 +181,9 @@ func (b *Bot) handleAdminText(ctx context.Context, chatID, adminID int64, text s
 func (b *Bot) handleAdminCallback(ctx context.Context, chatID, msgID, adminID int64, data string) bool {
 	kind, arg, _ := strings.Cut(data, ":")
 	switch kind {
+	case "adm":
+		b.showAdminMenu(ctx, chatID, msgID)
+		return true
 	case "au":
 		b.cmdUsers(ctx, chatID)
 		return true
@@ -181,7 +209,7 @@ func (b *Bot) handleAdminCallback(ctx context.Context, chatID, msgID, adminID in
 		}
 		b.showUsage(ctx, chatID, msgID, days)
 		return true
-	case "fba", "fbd", "fbs", "fbr":
+	case "fba", "fbd", "fbs", "fbr", "fbrd":
 		return b.handleFeedbackAdminCallback(ctx, chatID, msgID, adminID, kind, arg)
 	case "grv":
 		if m, err := strconv.Atoi(arg); err == nil {
@@ -286,6 +314,7 @@ func (b *Bot) cmdUsers(ctx context.Context, chatID int64) {
 			kb.InlineKeyboard = append(kb.InlineKeyboard, []telegram.InlineButton{btn})
 		}
 	}
+	kb.InlineKeyboard = append(kb.InlineKeyboard, row(adminBack()))
 	b.reply(ctx, chatID, sb.String(), kb)
 }
 
@@ -319,7 +348,7 @@ func (b *Bot) cmdStats(ctx context.Context, chatID int64) {
 		fmt.Fprintf(&sb, "Letzter Fehler: <code>%s</code>\n", esc(truncate(ps.LastError, 300)))
 	}
 	fmt.Fprintf(&sb, "Abfrageintervall: %s, Healthcheck: %s", b.cfg.PollInterval, onOff(b.cfg.HealthcheckURL != ""))
-	b.reply(ctx, chatID, sb.String(), nil)
+	b.reply(ctx, chatID, sb.String(), kb(row(adminBack())))
 }
 
 func truncate(s string, n int) string {
@@ -367,7 +396,7 @@ func (b *Bot) cmdBroadcast(ctx context.Context, chatID, adminID int64, text stri
 	if failed > 0 {
 		msg += fmt.Sprintf(" %d fehlgeschlagen (z. B. Bot blockiert).", failed)
 	}
-	b.reply(ctx, chatID, msg, nil)
+	b.reply(ctx, chatID, msg, kb(row(adminBack())))
 }
 
 const graceKey = "grace_minutes"
@@ -397,7 +426,7 @@ func (b *Bot) showGraceMenu(ctx context.Context, chatID, msgID int64, note strin
 			r = nil
 		}
 	}
-	k.InlineKeyboard = append(k.InlineKeyboard, row(btn("✏️ Anderer Wert", "gri"), btn("⬅️ Hauptmenü", "m")))
+	k.InlineKeyboard = append(k.InlineKeyboard, row(btn("✏️ Anderer Wert", "gri"), adminBack()))
 	text := fmt.Sprintf("⏳ <b>Karenzzeit</b>: %s\n\nFährt ein Auto innerhalb dieser Zeit nach der Einfahrt wieder aus, gilt der Parkvorgang als kostenlos (AGB von fair parken, Ziffer 3.2: 15 min). "+
 		"Verschwindet ein Vorgang erst später, geht der Bot davon aus, dass vor der Ausfahrt bezahlt wurde. Gilt für alle Parkplätze und Nutzer.",
 		fmtDuration(b.grace(ctx)))

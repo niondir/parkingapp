@@ -43,6 +43,10 @@ func TestFeedbackFlow(t *testing.T) {
 
 	// Admin inbox lists open feedback; the menu shows the count.
 	b.handle(ctx, msg(admin, "/menu"))
+	if m := tg.take(); !strings.Contains(strings.Join(buttonTexts(m[0]), "|"), "🛠 Admin (2)") {
+		t.Fatalf("main menu: %v", buttonTexts(m[0]))
+	}
+	b.handle(ctx, click(admin, "adm"))
 	if m := tg.take(); !strings.Contains(strings.Join(buttonTexts(m[0]), "|"), "📥 Feedback (2)") {
 		t.Fatalf("admin menu: %v", buttonTexts(m[0]))
 	}
@@ -89,6 +93,61 @@ func TestFeedbackFlow(t *testing.T) {
 	}
 	if p := b.getPending(user); p != nil {
 		t.Fatal("user got a reply prompt")
+	}
+}
+
+func TestFeedbackReplyDone(t *testing.T) {
+	ctx := context.Background()
+	b, tg, _ := setup(t)
+	const admin, user = 100, 1
+	b.cfg.Admins = map[int64]bool{admin: true}
+	b.store.SetUserStatus(ctx, user, store.UserAllowed)
+	b.handle(ctx, msg(user, "/feedback Idee"))
+	m := tg.take()
+	if a := byChat(m, admin); len(a) != 1 || !has(buttons(a[0]), "fbrd:1") || !has(buttons(a[0]), "adm") {
+		t.Fatalf("admin buttons: %+v", a)
+	}
+
+	// Reply and close in one go: one message to the user.
+	b.handle(ctx, click(admin, "fbrd:1"))
+	tg.take()
+	b.handle(ctx, msg(admin, "Ist umgesetzt"))
+	m = tg.take()
+	u := byChat(m, user)
+	if len(u) != 1 || !strings.Contains(u[0].text, "Status: ✅ erledigt") || !strings.Contains(u[0].text, "Ist umgesetzt") {
+		t.Fatalf("user: %+v", u)
+	}
+	if f, _ := b.store.GetFeedback(ctx, 1); f.Status != store.FeedbackDone || f.Reply != "Ist umgesetzt" {
+		t.Fatalf("stored: %+v", f)
+	}
+	if a := byChat(m, admin); has(buttons(a[len(a)-1]), "fbrd:1") {
+		t.Fatalf("done feedback offers closing again: %v", buttons(a[len(a)-1]))
+	}
+}
+
+// An admin handling their own feedback gets no extra notifications.
+func TestFeedbackOwnAdmin(t *testing.T) {
+	ctx := context.Background()
+	b, tg, _ := setup(t)
+	const admin = 100
+	b.cfg.Admins = map[int64]bool{admin: true}
+	b.handle(ctx, msg(admin, "/feedback Admin-Menü"))
+	tg.take()
+	b.handle(ctx, click(admin, "fbs:1:progress"))
+	if m := tg.take(); len(m) != 1 || strings.Contains(m[0].text, "ist jetzt") {
+		t.Fatalf("status: %+v", m)
+	}
+	b.handle(ctx, click(admin, "fbrd:1"))
+	tg.take()
+	b.handle(ctx, msg(admin, "Erledigt"))
+	m := tg.take()
+	for _, x := range m {
+		if strings.Contains(x.text, "Antwort auf dein Feedback") {
+			t.Fatalf("self notification: %+v", m)
+		}
+	}
+	if f, _ := b.store.GetFeedback(ctx, 1); f.Status != store.FeedbackDone {
+		t.Fatalf("status %s", f.Status)
 	}
 }
 

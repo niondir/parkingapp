@@ -93,10 +93,10 @@ var featureLabels = map[string]string{
 // adminFeatures are left out of the usage overview.
 var adminFeatures = map[string]bool{
 	"/users": true, "/allow": true, "/block": true, "/stats": true, "/rundnachricht": true, "/broadcast": true,
-	"/karenz": true, "/kulanz": true, "/grace": true, "/nutzung": true,
+	"/karenz": true, "/kulanz": true, "/grace": true, "/nutzung": true, "/usage": true, "/admin": true, "btn:adm": true,
 	"btn:au": true, "btn:as": true, "btn:ab": true, "btn:abx": true, "btn:ua": true, "btn:ub": true,
 	"btn:gr": true, "btn:grv": true, "btn:gri": true, "btn:us": true,
-	"btn:fba": true, "btn:fbd": true, "btn:fbs": true, "btn:fbr": true,
+	"btn:fba": true, "btn:fbd": true, "btn:fbs": true, "btn:fbr": true, "btn:fbrd": true,
 	"input:grace": true, "input:broadcast": true, "input:feedback-reply": true,
 }
 
@@ -173,7 +173,7 @@ func (b *Bot) showUsage(ctx context.Context, chatID, msgID int64, days int) {
 		}
 	}
 	sb.WriteString("\n<i>Gezählt pro Nutzer und Tag; Admin-Funktionen ausgenommen. Eine Interaktion ist ein Befehl, Button oder eine Eingabe.</i>")
-	k := kb(row(btn("7 Tage", "us:7"), btn("30 Tage", "us:30"), btn("90 Tage", "us:90")), row(btn("⬅️ Hauptmenü", "m")))
+	k := kb(row(btn("7 Tage", "us:7"), btn("30 Tage", "us:30"), btn("90 Tage", "us:90")), row(adminBack()))
 	b.show(ctx, chatID, msgID, sb.String(), k)
 }
 
