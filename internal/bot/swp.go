@@ -31,7 +31,8 @@ const providerSWP = "swp"
 // swpItem maps a Smart Web Pay hit fetched at time now onto a parking item.
 // Like fair parken's, the exit time is the fetch time while the car is
 // parked. Only "late" sessions (left, pay afterwards) keep the calculation
-// end as exit; what tariffTimeEnd means while parked is not verified.
+// end as exit; while parked, tariffTimeEnd equals tariffTimeStart after
+// paying (seen 2026-11-28), so it is no exit time.
 func swpItem(h swp.Hit, plate string, now time.Time) fairparken.ParkingItem {
 	out := now.UTC().Format(time.RFC3339)
 	if end, ok := h.End(); ok && h.TransactionType == "late" {

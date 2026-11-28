@@ -64,7 +64,7 @@ type Hit struct {
 	CurrencyDecimal int    `json:"currencyDecimal"`
 	Duration        string `json:"duration"`
 	TariffTimeStart string `json:"tariffTimeStart"` // entry, local time of the car park without zone (see Start)
-	TariffTimeEnd   string `json:"tariffTimeEnd"`   // end of the calculation: now while parked, the exit after leaving
+	TariffTimeEnd   string `json:"tariffTimeEnd"`   // end of the calculation; after paying while parked equal to TariffTimeStart, the exit after leaving
 	TransactionType string `json:"transactionType"` // "present" (still parked) or "late" (left, pay afterwards)
 	MediumValue     string `json:"mediumValue"`
 }
