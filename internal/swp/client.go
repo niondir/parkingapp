@@ -63,10 +63,45 @@ type Hit struct {
 	Currency        string `json:"currency"`
 	CurrencyDecimal int    `json:"currencyDecimal"`
 	Duration        string `json:"duration"`
-	TariffTimeStart string `json:"tariffTimeStart"` // entry (UTC)
+	TariffTimeStart string `json:"tariffTimeStart"` // entry, local time of the car park without zone (see Start)
 	TariffTimeEnd   string `json:"tariffTimeEnd"`   // end of the calculation: now while parked, the exit after leaving
 	TransactionType string `json:"transactionType"` // "present" (still parked) or "late" (left, pay afterwards)
 	MediumValue     string `json:"mediumValue"`
+}
+
+// Start returns the entry time. The service sends German local time without
+// a zone (e.g. "2026-11-28T09:19:29" for 08:19:29 UTC); a value with a zone
+// is taken as is.
+func (h Hit) Start() (time.Time, bool) { return parseLocal(h.TariffTimeStart) }
+
+// End returns the end of the calculation, see TariffTimeEnd.
+func (h Hit) End() (time.Time, bool) { return parseLocal(h.TariffTimeEnd) }
+
+// local is the time zone of all car parks (Country is fixed).
+var local = mustLoad("Europe/Berlin")
+
+func mustLoad(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}
+
+func parseLocal(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // Price converts Amount from minor units.

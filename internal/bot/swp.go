@@ -33,13 +33,18 @@ const providerSWP = "swp"
 // end as exit; what tariffTimeEnd means while parked is not verified.
 func swpItem(h swp.Hit, plate string, now time.Time) fairparken.ParkingItem {
 	out := now.UTC().Format(time.RFC3339)
-	if h.TransactionType == "late" && h.TariffTimeEnd != "" {
-		out = h.TariffTimeEnd
+	if end, ok := h.End(); ok && h.TransactionType == "late" {
+		out = end.UTC().Format(time.RFC3339)
+	}
+	in := ""
+	if start, ok := h.Start(); ok {
+		in = start.UTC().Format(time.RFC3339)
 	}
 	it := fairparken.ParkingItem{
 		Plate:        plate,
-		RealUTCIn:    h.TariffTimeStart,
+		RealUTCIn:    in,
 		RealUTCOut:   out,
+		SessionID:    h.TariffTimeStart,
 		QuotaAddress: h.CarParkName,
 		Provider:     providerSWP,
 		ParkID:       h.ParkID(),
