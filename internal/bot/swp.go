@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/niondir/parkingapp/internal/fairparken"
+	"github.com/niondir/parkingapp/internal/store"
 	"github.com/niondir/parkingapp/internal/swp"
 )
 
@@ -30,16 +31,22 @@ const providerSWP = "swp"
 // swpItem maps a Smart Web Pay hit fetched at time now onto a parking item.
 // Like fair parken's, the exit time is the fetch time while the car is
 // parked. Only "late" sessions (left, pay afterwards) keep the calculation
-// end as exit; what tariffTimeEnd means while parked is not verified.
+// end as exit; while parked, tariffTimeEnd equals tariffTimeStart after
+// paying (seen 2026-11-28), so it is no exit time.
 func swpItem(h swp.Hit, plate string, now time.Time) fairparken.ParkingItem {
 	out := now.UTC().Format(time.RFC3339)
-	if h.TransactionType == "late" && h.TariffTimeEnd != "" {
-		out = h.TariffTimeEnd
+	if end, ok := h.End(); ok && h.TransactionType == "late" {
+		out = end.UTC().Format(time.RFC3339)
+	}
+	in := ""
+	if start, ok := h.Start(); ok {
+		in = start.UTC().Format(time.RFC3339)
 	}
 	it := fairparken.ParkingItem{
 		Plate:        plate,
-		RealUTCIn:    h.TariffTimeStart,
+		RealUTCIn:    in,
 		RealUTCOut:   out,
+		SessionID:    h.TariffTimeStart,
 		QuotaAddress: h.CarParkName,
 		Provider:     providerSWP,
 		ParkID:       h.ParkID(),
@@ -55,6 +62,56 @@ func swpItem(h swp.Hit, plate string, now time.Time) fairparken.ParkingItem {
 	if p, ok := h.OriginalPrice(); ok {
 		it.OriginalPrice = &p
 	}
+	raw, _ := json.Marshal(it)
+	it.Raw = raw
+	return it
+}
+
+// Smart Web Pay moves tariffTimeStart to the end of the paid time when the
+// user pays while parked (seen 2026-11-28: start +1 h, amount 0 after paying
+// 1,50 €). So for other providers an open session of the same car park is
+// the same visit, whatever its start.
+
+// sameVisit finds the open session that continues in it.
+func sameVisit(open []store.Session, it fairparken.ParkingItem) (store.Session, bool) {
+	if it.Provider == "" {
+		return store.Session{}, false
+	}
+	var best store.Session
+	var bestIn time.Time
+	found := false
+	for _, s := range open {
+		var old fairparken.ParkingItem
+		if json.Unmarshal([]byte(s.Item), &old) != nil ||
+			old.Provider != it.Provider || old.ParkID != it.ParkID || old.City != it.City {
+			continue
+		}
+		in, _ := old.In()
+		if !found || in.Before(bestIn) {
+			best, bestIn, found = s, in, true
+		}
+	}
+	return best, found
+}
+
+// continueVisit keeps the entry and identity of the stored session s; a later
+// start of it means paid until then.
+func continueVisit(s store.Session, it fairparken.ParkingItem) fairparken.ParkingItem {
+	var old fairparken.ParkingItem
+	_ = json.Unmarshal([]byte(s.Item), &old)
+	oldIn, okOld := old.In()
+	in, ok := it.In()
+	if !okOld || (ok && !oldIn.Before(in)) {
+		return it
+	}
+	if ok {
+		it.PaidUntil = it.RealUTCIn
+	}
+	it.RealUTCIn = old.RealUTCIn
+	if old.SessionID != "" {
+		it.SessionID = old.SessionID
+	}
+	it.Raw = nil
 	raw, _ := json.Marshal(it)
 	it.Raw = raw
 	return it

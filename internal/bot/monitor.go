@@ -104,7 +104,8 @@ func (b *Bot) pingHealth(ctx context.Context, ok bool) {
 // process compares a fresh search result with the stored state and notifies
 // all subscribers about new and finished sessions. Only sessions of checked
 // sources (see source) can finish. The chat skipChat already got the result
-// as a direct answer and gets no push for new sessions.
+// as a direct answer and gets no push for new sessions. Sessions in res that
+// continue a stored visit get its entry time (see continueVisit).
 func (b *Bot) process(ctx context.Context, plate string, res []fairparken.SearchResult, checked map[string]bool, skipChat int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -120,9 +121,15 @@ func (b *Bot) process(ctx context.Context, plate string, res []fairparken.Search
 	now := b.clock()
 	grace := b.grace(ctx)
 	seen := map[string]bool{}
-	for _, r := range res {
+	for i, r := range res {
 		it := r.AnprResult
 		key := it.Key()
+		if s, ok := sameVisit(open, it); ok {
+			key = s.Key
+			it = continueVisit(s, it)
+			r.AnprResult = it
+			res[i].AnprResult = it // callers show res after process
+		}
 		seen[key] = true
 		raw, _ := json.Marshal(it.Raw)
 		created, reopened, err := b.store.UpsertSession(ctx, plate, key, string(raw))

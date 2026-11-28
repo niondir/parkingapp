@@ -69,10 +69,13 @@ func krohnstieg(in time.Time, amount string) swp.Hit {
 		CarParkName: "Krohnstieg Center", CarParkAddress: "Krohnstieg 41-43, 22415 Hamburg",
 		Operator: 99589, CellComputer: 8225, SystemTenant: "entervo.core",
 		Amount: amount, OriginalAmount: amount, Currency: "EUR", CurrencyDecimal: 2,
-		TariffTimeStart: in.UTC().Format(time.RFC3339), TariffTimeEnd: time.Now().UTC().Format(time.RFC3339),
+		TariffTimeStart: swpTime(in), TariffTimeEnd: swpTime(time.Now()),
 		TransactionType: "present",
 	}
 }
+
+// swpTime formats like Smart Web Pay: German local time without zone.
+func swpTime(t time.Time) string { return t.In(berlin).Format("2006-01-02T15:04:05") }
 
 const swpPay = "https://smart-web-pay.scheidt-bachmann.net/parking/select?city=Hamburg&country=DE&lpn=HHKF860E&parking=99589%408225"
 
@@ -105,7 +108,8 @@ func TestSWPMonitor(t *testing.T) {
 		t.Fatalf("want a push to both watchers, got %d: %v", len(m), m)
 	}
 	if !strings.Contains(m[0].text, "Neuer Parkvorgang") || !strings.Contains(m[0].text, "Krohnstieg Center") ||
-		!strings.Contains(m[0].text, "3,50 €") || strings.Contains(m[0].text, "Karenzzeit") {
+		!strings.Contains(m[0].text, "3,50 €") || strings.Contains(m[0].text, "Karenzzeit") ||
+		!strings.Contains(m[0].text, "Parkt seit: 40 min") || !strings.Contains(m[0].text, "Einfahrt: "+fmtTime(in)) {
 		t.Errorf("push: %s", m[0].text)
 	}
 	if bs := buttons(m[0]); bs[0] != swpPay || has(bs, "t:HHKF860E") {
@@ -264,7 +268,7 @@ func TestSWPLateSessionExits(t *testing.T) {
 	b.setCity(ctx, 1, 0, "Hamburg")
 	h := krohnstieg(time.Now().Add(-3*time.Hour), "500")
 	h.TransactionType = "late"
-	h.TariffTimeEnd = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	h.TariffTimeEnd = swpTime(time.Now().Add(-time.Hour))
 	sw.set("Hamburg", "HHKF860E", h)
 	tg.take()
 	b.pollAll(ctx)
@@ -320,5 +324,50 @@ func TestWatchedCitiesSkipsPaused(t *testing.T) {
 	c, err := b.store.WatchedCities(ctx, "HHKF860E")
 	if err != nil || len(c) != 1 || c[0] != "Hamburg" {
 		t.Fatalf("cities %v err %v", c, err)
+	}
+}
+
+// Paying while parked moves tariffTimeStart to the end of the paid time; it
+// stays the same visit.
+func TestSWPPaidWhileParked(t *testing.T) {
+	ctx := context.Background()
+	b, tg, _, sw := setupSWP(t)
+	b.handleText(ctx, 1, "/add HHKF860E")
+	b.setCity(ctx, 1, 0, "Hamburg")
+	in := time.Now().Add(-40 * time.Minute)
+	sw.set("Hamburg", "HHKF860E", krohnstieg(in, "150"))
+	b.pollAll(ctx)
+	tg.take()
+
+	sw.set("Hamburg", "HHKF860E", krohnstieg(in.Add(time.Hour), "0"))
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 0 {
+		t.Fatalf("paying looked like a new or finished session: %v", m)
+	}
+	open, _ := b.store.OpenSessions(ctx, "HHKF860E")
+	if len(open) != 1 {
+		t.Fatalf("want one open session: %+v", open)
+	}
+
+	press(b, 1, 0, "c:HHKF860E")
+	m := tg.take()
+	text := m[len(m)-1].text
+	for _, want := range []string{"Einfahrt: " + fmtTime(in), "Parkt seit: 40 min", "0,00 €", "Bezahlt bis " + in.Add(time.Hour).In(berlin).Format("15:04")} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %s", want, text)
+		}
+	}
+
+	// A later visit at the same car park is a new session.
+	sw.set("Hamburg", "HHKF860E")
+	b.pollAll(ctx)
+	b.pollAll(ctx)
+	tg.take()
+	sw.set("Hamburg", "HHKF860E", krohnstieg(time.Now().Add(-5*time.Minute), "0"))
+	b.pollAll(ctx)
+	if m := tg.take(); len(m) != 1 || !strings.Contains(m[0].text, "Neuer Parkvorgang") {
+		t.Fatalf("second visit: %v", m)
 	}
 }

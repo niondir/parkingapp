@@ -48,11 +48,14 @@ Zusätzlich zu fair parken sucht der Bot Kennzeichen in Parkhäusern, die über 
 
 Treffer laufen durch dieselben Meldungen, Alarme und denselben Verlauf wie bei fair parken; „💳 Bezahlen“ öffnet die Seite des Betreibers, bei dem der Parkvorgang offen ist. Tarife, Rabattcode, Frist-Erinnerung und Karenzzeit gelten nur für fair parken.
 
-Die API ist nicht dokumentiert (Client: `internal/swp`, Live-Test: `SWP_LIVE=1 SWP_CITY=Hamburg SWP_PLATE=HHAB123 go test ./internal/swp -run Live -v`). Nicht an einem echten Parkvorgang geprüft sind:
+Die API ist nicht dokumentiert (Client: `internal/swp`, Live-Test: `SWP_LIVE=1 SWP_CITY=Hamburg SWP_PLATE=HHAB123 go test ./internal/swp -run Live -v`). An einem echten Parkvorgang (Hamburg, 28.11.2026) geprüft:
 
-- Treffer = Antwort mit Einfahrtszeit (`tariffTimeStart`) – so zeigt es die Web-App an
-- Betrag in Cent (`amount / 10^currencyDecimal`) – ebenso aus der Web-App
-- Bezahl-Link mit vorausgefülltem Parkhaus und Kennzeichen (`/parking/select?country=…&city=…&parking=…&lpn=…`)
+- Treffer = Antwort mit Einfahrtszeit (`tariffTimeStart`); Betrag in Cent (`amount / 10^currencyDecimal`, 150 = 1,50 €)
+- `tariffTimeStart`/`tariffTimeEnd` sind deutsche Ortszeit ohne Zeitzone (`2026-11-28T09:19:29` = 08:19:29 UTC)
+- Nach dem Bezahlen (auch mit Gutschein) im Parkhaus springt `tariffTimeStart` auf das Ende der bezahlten Zeit, `tariffTimeEnd` ist gleich, `amount` und `originalAmount` werden 0. Bezahlung und Gutschein sind in der Antwort nicht zu unterscheiden (`vouchers` leer). Der Bot behält deshalb einen offenen Vorgang im selben Parkhaus als denselben Besuch, mit der zuerst gesehenen Einfahrt, und zeigt den neuen Start als „Bezahlt bis“.
+- Nach der Ausfahrt (bezahlt) liefert die Suche keinen Treffer mehr.
+
+Noch nicht geprüft: Bezahl-Link mit vorausgefülltem Parkhaus und Kennzeichen (`/parking/select?country=…&city=…&parking=…&lpn=…`) und Vorgänge vom Typ `late` (ausgefahren, Zahlung offen).
 
 ## Betrieb
 

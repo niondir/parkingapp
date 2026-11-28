@@ -132,7 +132,7 @@ func (f *fakeServer) ws(w http.ResponseWriter, r *http.Request) {
 
 const (
 	noSession = `{"dataAction":"ResponseData","data":{"carParkName":"Krohnstieg Center","amount":"0","tariffTimeStart":null}}`
-	present   = `{"dataAction":"ResponseData","data":{"carParkName":"Krohnstieg Center","carParkAddress":"Krohnstieg 41-43, 22415 Hamburg","operator":99589,"cellComputer":8225,"systemTenant":"entervo.core","amount":"350","originalAmount":"350","currency":"EUR","currencyDecimal":2,"tariffTimeStart":"2026-11-25T13:00:00Z","tariffTimeEnd":"2026-11-25T15:00:00Z","transactionType":"present"}}`
+	present   = `{"dataAction":"ResponseData","data":{"carParkName":"Krohnstieg Center","carParkAddress":"Krohnstieg 41-43, 22415 Hamburg","operator":99589,"cellComputer":8225,"systemTenant":"entervo.core","amount":"350","originalAmount":"350","currency":"EUR","currencyDecimal":2,"tariffTimeStart":"2026-11-25T14:00:00","tariffTimeEnd":"2026-11-25T16:00:00","transactionType":"present"}}`
 	notFound  = `{"dataAction":"FinishMessage","data":"FAILED: Payments not found","errorCode":true}`
 	finished  = `{"dataAction":"FinishMessage","data":"OK"}`
 )
@@ -152,6 +152,28 @@ func TestSearch(t *testing.T) {
 	h := res.Hits[0]
 	if p, ok := h.Price(); !ok || p != 3.5 || h.City != "Hamburg" || h.ParkID() != "99589@8225" {
 		t.Errorf("hit: %+v price %v", h, p)
+	}
+	// Times come as German local time without zone.
+	if st, ok := h.Start(); !ok || !st.Equal(time.Date(2026, 11, 25, 13, 0, 0, 0, time.UTC)) {
+		t.Errorf("start %v", st)
+	}
+	if end, ok := h.End(); !ok || !end.Equal(time.Date(2026, 11, 25, 15, 0, 0, 0, time.UTC)) {
+		t.Errorf("end %v", end)
+	}
+}
+
+func TestStartZone(t *testing.T) {
+	for in, want := range map[string]time.Time{
+		"2026-07-01T10:00:00":  time.Date(2026, 7, 1, 8, 0, 0, 0, time.UTC), // summer time
+		"2026-11-28T09:19:29":  time.Date(2026, 11, 28, 8, 19, 29, 0, time.UTC),
+		"2026-11-28T09:19:29Z": time.Date(2026, 11, 28, 9, 19, 29, 0, time.UTC),
+	} {
+		if got, ok := (Hit{TariffTimeStart: in}).Start(); !ok || !got.Equal(want) {
+			t.Errorf("%s: %v, want %v", in, got, want)
+		}
+	}
+	if _, ok := (Hit{}).Start(); ok {
+		t.Error("empty start")
 	}
 }
 

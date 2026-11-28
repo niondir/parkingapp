@@ -45,6 +45,10 @@ type ParkingItem struct {
 	ParkID   string `json:"parkId,omitempty"`   // car park of the provider
 	City     string `json:"city,omitempty"`     // city the provider was searched in
 	PayLink  string `json:"payLink,omitempty"`  // payment page of the provider
+	// SessionID identifies the session at the provider (Smart Web Pay: the
+	// entry time as sent, in local time). It keeps Key independent of how
+	// the entry time is converted to RealUTCIn.
+	SessionID string `json:"sessionId,omitempty"`
 
 	// Raw keeps all fields as returned by the API, so unknown fields survive
 	// a round trip through Quote.
@@ -63,7 +67,11 @@ func (p *ParkingItem) UnmarshalJSON(b []byte) error {
 // Key identifies a parking session.
 func (p ParkingItem) Key() string {
 	if p.Provider != "" {
-		return p.Provider + "|" + p.ParkID + "|" + p.RealUTCIn
+		id := p.SessionID
+		if id == "" {
+			id = p.RealUTCIn
+		}
+		return p.Provider + "|" + p.ParkID + "|" + id
 	}
 	return fmt.Sprintf("%d|%d|%s", p.AreaGkz, p.QuotaID, p.RealUTCIn)
 }

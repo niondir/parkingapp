@@ -93,7 +93,7 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time, grace time.D
 	if it.Price != nil {
 		if parked {
 			fmt.Fprintf(&b, "💶 Bei Zahlung jetzt: <b>%s</b>", fmtEuro(*it.Price))
-			if paid, ok := it.Paid(); ok {
+			if paid, ok := it.Paid(); ok && it.Provider == "" {
 				fmt.Fprintf(&b, " (deckt bis %s)", paid.In(berlin).Format("15:04"))
 			}
 		} else {
@@ -115,6 +115,9 @@ func fmtItem(it fairparken.ParkingItem, label string, at time.Time, grace time.D
 		}
 	case okOut:
 		fmt.Fprintf(&b, "⌛ Online zahlbar bis ca. %s\n", fmtTime(out.Add(PayWindow)))
+	}
+	if paid, ok := it.Paid(); ok && it.Provider != "" && parked {
+		fmt.Fprintf(&b, "✅ Bezahlt bis %s\n", paid.In(berlin).Format("15:04"))
 	}
 	if it.HasVoucher {
 		b.WriteString("🎟 Rabattcode möglich\n")
